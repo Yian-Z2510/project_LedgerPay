@@ -1,1 +1,15 @@
 .DS_Store
+
+# Maven
+target/
+
+# Java
+*.class
+
+# IDEs
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+.vscode/
