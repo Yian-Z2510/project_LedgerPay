@@ -198,3 +198,5 @@ mvnw.cmd
 - [API Design](docs/api_design.md)
 - [Database Design](docs/database_design.md)
 - [V2 Backlog](docs/v2_backlog.md)
+
+Pull requests are validated through GitHub Actions CI.
