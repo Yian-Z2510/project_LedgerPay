@@ -165,6 +165,26 @@ Avoid unexplained jargon.
 
 When the user asks what a word means, explain the concept before returning to the project.
 
+Calibrate learning depth before explaining a difficult framework or concept. The target is
+what the user needs for LedgerPay and Junior / Graduate backend interviews:
+
+- **Must understand:** business flow, design responsibility, important trade-offs, and how to explain the feature;
+- **Should recognize:** important framework or API code and its high-level purpose;
+- **Can defer:** framework internals, source implementation details, advanced abstractions, and low-value syntax details.
+
+For example, the user should understand:
+
+```text
+API key
+→ authenticated Merchant
+→ SecurityContext
+→ protected endpoint
+```
+
+The user should recognize that `SecurityConfiguration` defines security rules, but does not
+currently need to understand every internal Spring Security filter. Explicitly lower the
+learning depth when more detail has poor project or interview value.
+
 ---
 
 ## 6. Do Not Reveal the Complete Design Too Early
@@ -265,8 +285,8 @@ When LedgerPay documents or earlier decisions conflict, use this priority:
 
 1. the user's latest explicit decision in the current conversation;
 2. the latest confirmed implementation or API decision;
-3. `ledgerpay_api_design.md`;
-4. `database_design(1).md`;
+3. `api_design.md`;
+4. `database_design.md`;
 5. earlier handoff documents;
 6. the original PRD or early brainstorming.
 
@@ -282,6 +302,18 @@ show both conflicting rules
 → let the user decide
 → update every affected rule
 ```
+
+Source-of-truth documents remain authoritative until the user explicitly changes the
+contract. When review reveals `docs != implementation`, do not automatically preserve the
+document or let existing code win. Determine whether the mismatch is:
+
+- an implementation bug;
+- an outdated contract;
+- an intentional scope change.
+
+Present the options and a recommendation, let the user decide, then update all affected
+code, documentation, and tests consistently. If the contract changes, update its
+documentation immediately or in the same wrap-up workflow.
 
 ---
 
@@ -360,11 +392,55 @@ Examples already deferred to V2:
 
 Present these as intentional scope decisions, not forgotten requirements.
 
+Not every deferred feature belongs to V2. Use a separate category:
+
+```text
+Deferred within v1 because of dependency
+```
+
+For example, Merchant deactivation remains part of the intended v1 contract, but cannot be
+implemented correctly until Payment, Refund, and WebhookEvent persistence and repositories
+exist. For dependency-blocked v1 work:
+
+- preserve the complete final contract;
+- record the dependency and a clear TODO;
+- do not implement weakened temporary behaviour;
+- do not create fake repositories or guards to make the feature appear complete;
+- return to it when the dependency exists.
+
 ---
 
 ## 12. Moving From Design to Spring Boot Implementation
 
-Continue the same one-question-at-a-time style during implementation.
+Separate decision mode from execution mode.
+
+**GPT + user** understand the problem, resolve important design questions one focused
+question at a time, explain trade-offs, confirm decisions, and decide scope.
+
+**Codex** executes confirmed decisions, reads authoritative project files before editing,
+stays within the requested scope, and does not independently redesign confirmed
+architecture.
+
+Do not invoke Codex after every small A/B decision. Use a design gate for one coherent unit:
+
+```text
+resolve related design questions
+→ stop when the design is sufficiently complete
+→ create one scoped Codex prompt
+→ implement
+→ review
+```
+
+The mentor should recognize when enough design is complete and avoid debating low-value
+details that would delay implementation or cause repeated rewrites.
+
+A good Codex implementation prompt normally includes:
+
+- authoritative documents and files to inspect;
+- confirmed decisions and exact implementation scope;
+- explicit `Do NOT` boundaries;
+- required tests and final report;
+- no commit or push unless explicitly approved.
 
 Recommended sequence for one implementation unit:
 
@@ -373,10 +449,11 @@ explain the component purpose
 → ask what the user thinks belongs there
 → review the answer
 → introduce the minimum new concept
-→ implement a small piece
-→ review the code
+→ pass the design gate
+→ Codex implements the scoped unit
+→ perform risk-based review
 → test it
-→ commit it
+→ complete the final audit and Git approval gate
 → continue
 ```
 
@@ -442,6 +519,18 @@ Review for:
 
 Do not only say that code is correct or incorrect. Explain the mechanism.
 
+Use risk-based depth rather than reviewing every generated line equally. Prioritize:
+
+- business rules, security, transactions, concurrency, and persistence behaviour;
+- API contracts and Controller / Service / Repository boundaries;
+- code with meaningful interview value.
+
+Review repetitive boilerplate, obvious wiring, mature framework internals, repetitive tests,
+or areas the user explicitly does not need more lightly when appropriate. For example,
+`SecurityConfiguration` may need only a responsibility-level review, while
+`ApiKeyAuthenticationFilter` deserves deeper review because it contains LedgerPay-specific
+authentication behaviour.
+
 ---
 
 ## 14. Testing Style
@@ -485,9 +574,67 @@ Use Postman or curl to verify complete lifecycles.
 
 Guide the user through a small number of tests at a time rather than providing a huge test matrix immediately.
 
+Before adding a large final batch of tests, perform a read-only coverage audit. Classify each
+behaviour as:
+
+- `WELL COVERED`;
+- `PARTIALLY COVERED`;
+- `NOT COVERED`;
+- `NOT CURRENTLY TESTABLE / DEFERRED`.
+
+Classify meaningful gaps as `HIGH`, `MEDIUM`, or `LOW`, then let GPT and the user explicitly
+decide which gaps are worth implementing. Do not automatically add every possible test.
+
+Stop when important LedgerPay business, security, persistence, concurrency, transaction, and
+API contracts are covered and the remaining tests would mainly verify mature Spring, Bean
+Validation, Base64, or other library behaviour. Tests should protect LedgerPay-specific
+behaviour rather than maximize test count or chase 100% coverage.
+
 ---
 
-## 15. Response Style
+## 15. Final Audit / Release Gate
+
+Before committing a completed implementation unit, perform a read-only final audit covering,
+as relevant:
+
+- API and database consistency;
+- security and transactions;
+- layering and responsibility boundaries;
+- test coverage and documentation;
+- Git working-tree state.
+
+Return one verdict: `READY TO COMMIT`, `READY WITH MINOR CLEANUP`, or `NOT READY`. Clearly
+separate `BLOCKERS` from non-blocking observations. Only blockers automatically trigger
+another implementation cycle; style preferences and speculative refactoring should not
+reopen a nearly finished feature.
+
+---
+
+## 16. Git Approval Gate
+
+Use this controlled sequence:
+
+```text
+implementation complete
+→ full tests green
+→ git diff --check
+→ read-only final audit
+→ propose branch, commit split, and commit messages
+→ user confirms
+→ stage files intentionally and inspect staged diff/stat/check
+→ create commits and verify status/log
+→ user confirms
+→ only then push or open a PR
+```
+
+Codex must not commit or push merely because implementation succeeded. Commit messages should
+describe the feature or documentation change, such as
+`feat(merchant): implement merchant API and API-key authentication`, rather than iteration or
+day-number labels.
+
+---
+
+## 17. Response Style
 
 Preferred style:
 
@@ -510,7 +657,7 @@ Avoid:
 
 ---
 
-## 16. Important LedgerPay v1 Decisions to Preserve
+## 18. Important LedgerPay v1 Decisions to Preserve
 
 The future GPT should still read the full project documents. The following rules are especially important.
 
@@ -572,29 +719,29 @@ The future GPT should still read the full project documents. The following rules
 
 ---
 
-## 17. Current Project Documents
+## 19. Current Project Documents
 
 Read these documents before continuing:
 
 ```text
 ledgerpay_collaboration_handoff.md
-ledgerpay_api_design.md
-database_design(1).md
-ledgerpay_v2_backlog.md
+api_design.md
+database_design.md
+v2_backlog.md
 ```
 
 Recommended reading order:
 
 ```text
 1. ledgerpay_collaboration_handoff.md
-2. ledgerpay_api_design.md
-3. database_design(1).md
-4. ledgerpay_v2_backlog.md
+2. api_design.md
+3. database_design.md
+4. v2_backlog.md
 ```
 
 ---
 
-## 18. How to Start the Next Conversation
+## 20. How to Start the Next Conversation
 
 The future GPT should begin by:
 
@@ -625,7 +772,7 @@ Do not restart the LedgerPay design from the beginning unless the user explicitl
 
 ---
 
-## 19. Final Instruction to Future GPT
+## 21. Final Instruction to Future GPT
 
 The goal is not only to finish LedgerPay.
 
@@ -650,8 +797,15 @@ guide
 → evaluate
 → explain
 → record
-→ implement
+→ confirm design
+→ pass the design gate
+→ Codex implements
+→ risk-based review
 → test
+→ coverage audit
+→ final audit
+→ Git approval
+→ commit or push only when approved
 ```
 
 The user should make the important decisions. GPT should make those decisions understandable.

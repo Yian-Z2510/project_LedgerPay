@@ -157,18 +157,7 @@ Endpoints with a JSON body require:
 Content-Type: application/json
 ```
 
-Wrong or missing content type:
-
-```http
-415 Unsupported Media Type
-```
-
-```json
-{
-  "code": "UNSUPPORTED_MEDIA_TYPE",
-  "message": "Content-Type must be application/json."
-}
-```
+LedgerPay v1 does not define a custom error response for a wrong or missing content type. Spring handles unsupported media types using its normal framework behaviour.
 
 Malformed JSON, invalid field types, missing required fields, unknown fields, and invalid enum values return `400 VALIDATION_ERROR`.
 
@@ -246,6 +235,10 @@ A newly created resource returns:
 201 Created
 Location: <canonical resource URL>
 ```
+
+Merchant registration is an approved v1 exception to this general convention:
+`POST /api/v1/merchants` returns `201 Created` with a `CreateMerchantResponse`
+body and does not require a `Location` header.
 
 A historical idempotent replay returns:
 
@@ -525,8 +518,9 @@ Rules:
 
 ```http
 201 Created
-Location: /api/v1/merchant
 ```
+
+The response body is `CreateMerchantResponse`. A `Location` header is not required for Merchant registration.
 
 ```json
 {
@@ -550,7 +544,6 @@ The plaintext key is returned only in this response.
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | Invalid body or fields |
 | 409 | `MERCHANT_EMAIL_ALREADY_EXISTS` | Normalized email already exists |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request is not JSON |
 
 ### Security note
 
@@ -635,7 +628,6 @@ Returns the complete updated Merchant.
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | Unsupported field, invalid URL, blank URL, or empty patch |
 | 401 | `UNAUTHORIZED` | Invalid or missing credentials |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request is not JSON |
 
 ---
 
@@ -680,6 +672,11 @@ The old key becomes invalid immediately after the operation commits. The new pla
 ---
 
 ## 5.5 Deactivate Merchant
+
+> **Implementation status:** Intentionally deferred until persistence and
+> repository support exists for Payment, Refund, and WebhookEvent. The endpoint
+> must not be implemented until it can reject deactivation when any corresponding
+> `PENDING` records exist.
 
 ```http
 POST /api/v1/merchant/deactivate
@@ -771,7 +768,6 @@ Returns the complete `CREATED` Order.
 |---|---|---|
 | 400 | `VALIDATION_ERROR` | Amount is missing, non-integer, zero, or negative |
 | 401 | `UNAUTHORIZED` | Invalid or missing credentials |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request is not JSON |
 
 ---
 
@@ -876,7 +872,6 @@ Returns the complete updated Order.
 | 401 | `UNAUTHORIZED` | Invalid or missing credentials |
 | 404 | `ORDER_NOT_FOUND` | Missing or cross-merchant Order |
 | 409 | `ORDER_INVALID_STATE` | Order is not editable |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request is not JSON |
 
 ---
 
@@ -1034,7 +1029,6 @@ Historical idempotency lookup happens before mutable state validation. Under con
 | 409 | `PAYMENT_ALREADY_PENDING` | A current Payment is already pending |
 | 409 | `ORDER_ALREADY_PAID` | A Payment already succeeded |
 | 409 | `ORDER_INVALID_STATE` | Order cannot accept a Payment |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request is not JSON |
 
 ---
 
@@ -1198,7 +1192,6 @@ Returns the complete terminal Payment.
 | 401 | `UNAUTHORIZED` | Invalid or missing credentials |
 | 404 | `PAYMENT_NOT_FOUND` | Missing or cross-merchant Payment |
 | 409 | `PAYMENT_INVALID_STATE` | Payment is no longer `PENDING` |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request is not JSON |
 
 ---
 
@@ -1305,7 +1298,6 @@ The Payment lock serializes refund-capacity decisions for the same Payment while
 | 409 | `IDEMPOTENCY_CONFLICT` | Key previously used for a different request |
 | 409 | `PAYMENT_NOT_REFUNDABLE` | Payment has not succeeded |
 | 409 | `INSUFFICIENT_REFUNDABLE_AMOUNT` | Requested amount exceeds available capacity |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request is not JSON |
 
 ```json
 {
@@ -1461,7 +1453,6 @@ Returns the complete terminal Refund.
 | 401 | `UNAUTHORIZED` | Invalid or missing credentials |
 | 404 | `REFUND_NOT_FOUND` | Missing or cross-merchant Refund |
 | 409 | `REFUND_INVALID_STATE` | Refund is no longer `PENDING` |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Request is not JSON |
 
 ---
 
@@ -1606,7 +1597,6 @@ The response does not expose:
 | 404 | `ENDPOINT_NOT_FOUND` | Route does not exist |
 | 405 | `METHOD_NOT_ALLOWED` | Route exists but method is unsupported |
 | 409 | `IDEMPOTENCY_CONFLICT` | Key reused with a different request identity |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | JSON endpoint called without JSON content type |
 | 500 | `INTERNAL_ERROR` | Unexpected server failure |
 
 Unknown route:

@@ -12,14 +12,18 @@ The following functionality is currently implemented:
 - Java 21 and Maven configuration
 - PostgreSQL datasource configuration through environment variables
 - `GET /health` application-level liveness endpoint
-- Focused Spring MVC test for the health endpoint
-- Full Spring application-context test
+- Merchant registration, retrieval, webhook URL update, and API-key rotation endpoints
+- Merchant API-key authentication, with only API-key hashes stored in PostgreSQL
+- Validation and consistent API error responses for the Merchant module
+- Focused unit, MVC, persistence, security, and integration tests
 
-## Planned V1 Scope
+Merchant deactivation is intentionally deferred until the required Payment, Refund,
+and WebhookEvent pending-state checks can be implemented.
 
-The planned v1 design includes:
+## Remaining Planned V1 Scope
 
-- Merchant registration and API-key authentication
+The remaining planned v1 design includes:
+
 - Merchant-scoped resource isolation
 - Order lifecycle management
 - Payment creation and manual payment simulation
@@ -27,9 +31,9 @@ The planned v1 design includes:
 - Payment and Refund idempotency
 - PostgreSQL transaction and locking rules
 - Webhook event persistence, delivery, and retry
-- Validation and consistent error responses
+- Validation and consistent error responses for the remaining modules
 
-These capabilities are planned and are not yet implemented.
+These remaining capabilities are planned and are not yet implemented.
 
 ## Tech Stack
 
@@ -162,6 +166,10 @@ direnv exec . ./mvnw test
 | Method | Path | Description | Response |
 | --- | --- | --- | --- |
 | GET | `/health` | Application liveness-style check | `{"status":"UP"}` |
+| POST | `/api/v1/merchants` | Register a Merchant and issue its first API key | `CreateMerchantResponse` |
+| GET | `/api/v1/merchant` | Get the authenticated Merchant | `MerchantResponse` |
+| PATCH | `/api/v1/merchant` | Update the authenticated Merchant webhook URL | `MerchantResponse` |
+| POST | `/api/v1/merchant/api-key/rotate` | Rotate the authenticated Merchant API key | `RotateApiKeyResponse` |
 
 ## Project Structure
 

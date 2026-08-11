@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.ledgerpay.entity.Merchant;
@@ -67,6 +68,31 @@ class MerchantRepositoryTest {
 
         assertNotNull(savedMerchant.getCreatedAt());
         assertNotNull(savedMerchant.getUpdatedAt());
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void databaseRefreshesUpdatedAtWithoutChangingCreatedAt() {
+        Merchant merchant = createMerchant(
+                "Updated Timestamp Merchant",
+                "updated-timestamp@example.com",
+                'b');
+        Merchant savedMerchant = merchantRepository.saveAndFlush(merchant);
+
+        try {
+            Instant originalCreatedAt = savedMerchant.getCreatedAt();
+            Instant originalUpdatedAt = savedMerchant.getUpdatedAt();
+
+            savedMerchant.setName("Updated Timestamp Merchant Name");
+            merchantRepository.saveAndFlush(savedMerchant);
+            Merchant reloadedMerchant = merchantRepository.findById(savedMerchant.getId())
+                    .orElseThrow();
+
+            assertEquals(originalCreatedAt, reloadedMerchant.getCreatedAt());
+            assertTrue(reloadedMerchant.getUpdatedAt().isAfter(originalUpdatedAt));
+        } finally {
+            merchantRepository.deleteById(savedMerchant.getId());
+        }
     }
 
     @Test
