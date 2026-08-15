@@ -23,6 +23,7 @@ public class GlobalExceptionHandler {
 
     private static final String VALIDATION_ERROR = "VALIDATION_ERROR";
     private static final String MERCHANT_EMAIL_ALREADY_EXISTS = "MERCHANT_EMAIL_ALREADY_EXISTS";
+    private static final String ORDER_NOT_FOUND = "ORDER_NOT_FOUND";
     private static final String INTERNAL_ERROR = "INTERNAL_ERROR";
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -58,6 +59,24 @@ public class GlobalExceptionHandler {
                 .body(new ApiErrorResponse(
                         MERCHANT_EMAIL_ALREADY_EXISTS,
                         "A merchant with this email already exists."));
+    }
+
+    @ExceptionHandler(OrderNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleOrderNotFound(
+            OrderNotFoundException exception) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse(
+                        ORDER_NOT_FOUND,
+                        "Order was not found."));
+    }
+
+    @ExceptionHandler(InvalidOrderIdException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidOrderId(
+            InvalidOrderIdException exception) {
+        return ResponseEntity.badRequest()
+                .body(new ApiErrorResponse(
+                        VALIDATION_ERROR,
+                        "Invalid order ID."));
     }
 
     @ExceptionHandler(Exception.class)

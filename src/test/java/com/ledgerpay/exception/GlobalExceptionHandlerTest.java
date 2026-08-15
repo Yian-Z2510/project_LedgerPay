@@ -99,6 +99,15 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void orderNotFoundReturnsNotFoundContract() throws Exception {
+        mockMvc.perform(get("/test/order-not-found"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string(
+                        "{\"code\":\"ORDER_NOT_FOUND\","
+                                + "\"message\":\"Order was not found.\"}"));
+    }
+
+    @Test
     void unexpectedExceptionReturnsGenericResponseWithoutInternalDetails() throws Exception {
         mockMvc.perform(get("/test/unexpected"))
                 .andExpect(status().isInternalServerError())
@@ -133,6 +142,11 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/test/duplicate-email")
         void duplicateEmail() {
             throw new MerchantEmailAlreadyExistsException();
+        }
+
+        @GetMapping("/test/order-not-found")
+        void orderNotFound() {
+            throw new OrderNotFoundException();
         }
 
         @GetMapping("/test/unexpected")

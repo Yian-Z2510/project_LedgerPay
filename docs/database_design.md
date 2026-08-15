@@ -96,6 +96,12 @@ Spring Boot should use `Instant` for these values.
 - `updated_at` is generated on insert and automatically refreshed by a database update trigger.
 - API clients must not control audit timestamps.
 
+Migration V2 introduced the reusable PostgreSQL trigger function
+`set_updated_at()`. Both `trg_merchant_set_updated_at` and
+`trg_merchant_order_set_updated_at` execute this function. The previous
+Merchant-specific function `set_merchant_updated_at()` was removed after the
+Merchant trigger was switched to the generic helper.
+
 ---
 
 ## 3. Entity Relationships
@@ -275,12 +281,16 @@ A paid or refunded order cannot be directly cancelled. After payment, money must
 
 ### Order modification rule
 
-`amount` and `currency` may be modified only when both conditions are true:
+`amount` may be modified only when both conditions are true:
 
 1. `status = CREATED`;
 2. no Payment has ever been created for the order.
 
-Once a Payment exists, changing the order amount or currency would make the transaction history inconsistent. The merchant must cancel the old order and create a new one.
+`currency` is immutable in v1 and always remains `EUR`.
+
+Once a Payment exists, changing the order amount would make the transaction
+history inconsistent. The merchant must cancel the old order and create a new
+one.
 
 ### External order reference
 
@@ -1028,11 +1038,16 @@ Adding a new valid code requires both a Java change and a database migration. Th
 Explicit non-unique indexes in v1:
 
 ```text
+idx_merchant_order_merchant_id_created_at
+    ON merchant_order (merchant_id, created_at DESC)
 idx_payment_merchant_order_id
 idx_refund_payment_id
 idx_webhook_event_merchant_id
 idx_webhook_event_status
 ```
+
+`idx_merchant_order_merchant_id_created_at` supports merchant-scoped Order
+listing ordered by newest `created_at` first.
 
 Additional indexes are created implicitly or explicitly by primary keys, unique constraints, case-insensitive email uniqueness, merchant-scoped idempotency, partial Payment uniqueness, composite ownership keys, and WebhookEvent deduplication.
 
