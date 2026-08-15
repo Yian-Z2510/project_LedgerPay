@@ -229,16 +229,19 @@ Example:
 
 ### 3.8 Create and replay status codes
 
-A newly created resource returns:
+Unless an endpoint-specific contract states otherwise, a newly created resource returns:
 
 ```http
 201 Created
 Location: <canonical resource URL>
 ```
 
-Merchant registration is an approved v1 exception to this general convention:
-`POST /api/v1/merchants` returns `201 Created` with a `CreateMerchantResponse`
-body and does not require a `Location` header.
+The following are approved v1 exceptions to the `Location` header convention:
+
+- `POST /api/v1/merchants` returns `201 Created` with a
+  `CreateMerchantResponse` body and no `Location` header;
+- `POST /api/v1/orders` returns `201 Created` with an `OrderResponse` body and
+  no `Location` header.
 
 A historical idempotent replay returns:
 
@@ -751,16 +754,17 @@ Required.
 }
 ```
 
-The client does not send `currency`; the server sets `EUR`.
+The client does not send `currency`; the server sets `EUR`. Order currency is
+immutable in v1.
 
 ### Success
 
 ```http
 201 Created
-Location: /api/v1/orders/ord_<uuid>
 ```
 
-Returns the complete `CREATED` Order.
+Returns the complete `CREATED` Order as an `OrderResponse`. A `Location` header
+is not returned for Order creation in v1.
 
 ### Errors
 
@@ -835,6 +839,13 @@ Returns the complete Order.
 PATCH /api/v1/orders/{orderId}
 ```
 
+### Implementation sequencing
+
+This endpoint remains part of the formal v1 API design. Its implementation is
+intentionally deferred until Payment persistence and repository support exist,
+because eligibility requires proving that no Payment has ever been created for
+the Order. The final implementation must enforce both preconditions below.
+
 ### Authentication
 
 Required.
@@ -854,7 +865,8 @@ Both conditions must be true:
 1. `Order.status = CREATED`;
 2. no Payment has ever been created for the Order.
 
-Currency is immutable in v1 and always remains `EUR`.
+Only `amount` may be changed by this endpoint. Currency is immutable in v1,
+always remains `EUR`, and must not be accepted in the PATCH request.
 
 ### Success
 
@@ -880,6 +892,15 @@ Returns the complete updated Order.
 ```http
 POST /api/v1/orders/{orderId}/cancel
 ```
+
+### Implementation sequencing
+
+This endpoint remains part of the formal v1 API design. Its implementation is
+intentionally deferred until Payment persistence and repository support exist.
+Cancellation from `PAYMENT_PENDING` requires checking whether a current
+`PENDING` Payment exists, and the final implementation must consider concurrency
+with Payment creation. The locking approach will be decided with the Payment
+implementation.
 
 ### Authentication
 
