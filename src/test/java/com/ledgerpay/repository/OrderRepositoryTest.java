@@ -101,6 +101,23 @@ class OrderRepositoryTest {
     }
 
     @Test
+    void findForUpdateByIdAndMerchantIdScopesLockedOrderByOwnership() {
+        Merchant owner = merchantRepository.saveAndFlush(createMerchant("Locking Merchant"));
+        Merchant differentMerchant = merchantRepository.saveAndFlush(createMerchant("Different Locking Merchant"));
+        MerchantOrder order = orderRepository.saveAndFlush(new MerchantOrder(owner, 1000L));
+
+        Optional<MerchantOrder> ownerResult = orderRepository.findForUpdateByIdAndMerchantId(
+                order.getId(),
+                owner.getId());
+        Optional<MerchantOrder> differentMerchantResult = orderRepository.findForUpdateByIdAndMerchantId(
+                order.getId(),
+                differentMerchant.getId());
+
+        assertEquals(order.getId(), ownerResult.orElseThrow().getId());
+        assertTrue(differentMerchantResult.isEmpty());
+    }
+
+    @Test
     void findByMerchantIdOrderByCreatedAtDescReturnsOnlyOwnedOrders() {
         Merchant owner = merchantRepository.saveAndFlush(createMerchant("Listing Merchant"));
         Merchant differentMerchant = merchantRepository.saveAndFlush(createMerchant("Other Listing Merchant"));
