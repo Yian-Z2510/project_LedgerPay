@@ -1005,10 +1005,9 @@ Multiple failed Payment records may exist for one Order.
 
 ```http
 201 Created
-Location: /api/v1/payments/pay_<uuid>
 ```
 
-Returns a complete `PENDING` Payment.
+Returns a complete `PENDING` Payment. No `Location` header is returned.
 
 ### Success: historical replay
 
