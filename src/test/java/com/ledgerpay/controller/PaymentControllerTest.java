@@ -21,11 +21,13 @@ import com.ledgerpay.entity.MerchantOrder;
 import com.ledgerpay.entity.OrderStatus;
 import com.ledgerpay.entity.Payment;
 import com.ledgerpay.entity.PaymentFailureCode;
+import com.ledgerpay.entity.PaymentSimulationOutcome;
 import com.ledgerpay.exception.GlobalExceptionHandler;
 import com.ledgerpay.exception.OrderAlreadyPaidException;
 import com.ledgerpay.exception.OrderInvalidStateException;
 import com.ledgerpay.exception.OrderNotFoundException;
 import com.ledgerpay.exception.PaymentAlreadyPendingException;
+import com.ledgerpay.exception.PaymentInvalidStateException;
 import com.ledgerpay.exception.PaymentNotFoundException;
 import com.ledgerpay.repository.MerchantRepository;
 import com.ledgerpay.security.LedgerPayAuthenticationEntryPoint;
@@ -401,6 +403,224 @@ class PaymentControllerTest {
         verifyNoInteractions(paymentService);
     }
 
+    @Test
+    void simulatePaymentSucceededReturnsCompletePaymentResponse() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        MerchantOrder order = persistedOrder(merchant, OrderStatus.PAID);
+        Payment payment = succeededPayment(order, UUID.randomUUID(), "simulate-success-key");
+        authenticate(merchant);
+        when(paymentService.simulatePayment(
+                        merchant,
+                        payment.getId(),
+                        PaymentSimulationOutcome.SUCCEEDED,
+                        null))
+                .thenReturn(payment);
+
+        mockMvc.perform(post("/api/v1/payments/pay_" + payment.getId() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"outcome":"SUCCEEDED"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist(HttpHeaders.LOCATION))
+                .andExpect(jsonPath("$.id").value("pay_" + payment.getId()))
+                .andExpect(jsonPath("$.orderId").value("ord_" + order.getId()))
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.failureCode").value((Object) null))
+                .andExpect(jsonPath("$.completedAt").value(COMPLETED_AT.toString()));
+
+        verify(paymentService).simulatePayment(
+                merchant,
+                payment.getId(),
+                PaymentSimulationOutcome.SUCCEEDED,
+                null);
+    }
+
+    @Test
+    void simulatePaymentSucceededAcceptsExplicitNullFailureCode() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        MerchantOrder order = persistedOrder(merchant, OrderStatus.PAID);
+        Payment payment = succeededPayment(order, UUID.randomUUID(), "explicit-null-key");
+        authenticate(merchant);
+        when(paymentService.simulatePayment(
+                        merchant,
+                        payment.getId(),
+                        PaymentSimulationOutcome.SUCCEEDED,
+                        null))
+                .thenReturn(payment);
+
+        mockMvc.perform(post("/api/v1/payments/pay_" + payment.getId() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "outcome":"SUCCEEDED",
+                                  "failureCode":null
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"));
+    }
+
+    @Test
+    void simulatePaymentFailedReturnsCompletePaymentResponse() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        MerchantOrder order = persistedOrder(merchant, OrderStatus.PAYMENT_PENDING);
+        Payment payment = failedPayment(order, UUID.randomUUID(), "simulate-failure-key");
+        authenticate(merchant);
+        when(paymentService.simulatePayment(
+                        merchant,
+                        payment.getId(),
+                        PaymentSimulationOutcome.FAILED,
+                        PaymentFailureCode.PAYMENT_DECLINED))
+                .thenReturn(payment);
+
+        mockMvc.perform(post("/api/v1/payments/pay_" + payment.getId() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "outcome":"FAILED",
+                                  "failureCode":"PAYMENT_DECLINED"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.failureCode").value("PAYMENT_DECLINED"))
+                .andExpect(jsonPath("$.completedAt").value(COMPLETED_AT.toString()));
+
+        verify(paymentService).simulatePayment(
+                merchant,
+                payment.getId(),
+                PaymentSimulationOutcome.FAILED,
+                PaymentFailureCode.PAYMENT_DECLINED);
+    }
+
+    @Test
+    void simulatePaymentRejectsInvalidPaymentIdWithoutCallingService() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        authenticate(merchant);
+
+        mockMvc.perform(post("/api/v1/payments/ord_" + UUID.randomUUID() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"outcome\":\"SUCCEEDED\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value("Invalid payment ID."));
+
+        verifyNoInteractions(paymentService);
+    }
+
+    @Test
+    void simulatePaymentRejectsMissingOutcome() throws Exception {
+        assertInvalidSimulationBody("{}");
+    }
+
+    @Test
+    void simulatePaymentRejectsUnknownOutcome() throws Exception {
+        assertInvalidSimulationBody("{\"outcome\":\"COMPLETED\"}");
+    }
+
+    @Test
+    void simulatePaymentRejectsPendingOutcome() throws Exception {
+        assertInvalidSimulationBody("{\"outcome\":\"PENDING\"}");
+    }
+
+    @Test
+    void simulatePaymentRejectsFailedOutcomeWithoutFailureCode() throws Exception {
+        assertInvalidSimulationBody("{\"outcome\":\"FAILED\"}");
+    }
+
+    @Test
+    void simulatePaymentRejectsSucceededOutcomeWithFailureCode() throws Exception {
+        assertInvalidSimulationBody("""
+                {
+                  "outcome":"SUCCEEDED",
+                  "failureCode":"PAYMENT_DECLINED"
+                }
+                """);
+    }
+
+    @Test
+    void simulatePaymentRejectsUnknownFailureCode() throws Exception {
+        assertInvalidSimulationBody("""
+                {
+                  "outcome":"FAILED",
+                  "failureCode":"BANK_ERROR"
+                }
+                """);
+    }
+
+    @Test
+    void simulatePaymentRejectsMalformedJson() throws Exception {
+        assertInvalidSimulationBody("{");
+    }
+
+    @Test
+    void simulatePaymentRejectsUnknownJsonField() throws Exception {
+        assertInvalidSimulationBody("""
+                {
+                  "outcome":"SUCCEEDED",
+                  "merchantId":"mer_client-controlled"
+                }
+                """);
+    }
+
+    @Test
+    void simulatePaymentMapsMissingOrCrossMerchantPaymentToNotFound() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID paymentId = UUID.randomUUID();
+        authenticate(merchant);
+        when(paymentService.simulatePayment(
+                        merchant,
+                        paymentId,
+                        PaymentSimulationOutcome.SUCCEEDED,
+                        null))
+                .thenThrow(new PaymentNotFoundException());
+
+        mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"outcome\":\"SUCCEEDED\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("PAYMENT_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value("Payment was not found."));
+    }
+
+    @Test
+    void simulatePaymentMapsTerminalPaymentToConflict() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID paymentId = UUID.randomUUID();
+        authenticate(merchant);
+        when(paymentService.simulatePayment(
+                        merchant,
+                        paymentId,
+                        PaymentSimulationOutcome.SUCCEEDED,
+                        null))
+                .thenThrow(new PaymentInvalidStateException());
+
+        mockMvc.perform(post("/api/v1/payments/pay_" + paymentId + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"outcome\":\"SUCCEEDED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("PAYMENT_INVALID_STATE"))
+                .andExpect(jsonPath("$.message").value("Payment is no longer pending."));
+    }
+
+    @Test
+    void simulatePaymentRequiresAuthentication() throws Exception {
+        mockMvc.perform(post("/api/v1/payments/pay_" + UUID.randomUUID() + "/simulate")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"outcome\":\"SUCCEEDED\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
+
+        verifyNoInteractions(paymentService);
+    }
+
     private void assertCreateError(
             RuntimeException exception,
             int expectedStatus,
@@ -422,6 +642,20 @@ class PaymentControllerTest {
                 .andExpect(status().is(expectedStatus))
                 .andExpect(jsonPath("$.code").value(expectedCode))
                 .andExpect(jsonPath("$.message").value(expectedMessage));
+    }
+
+    private void assertInvalidSimulationBody(String requestBody) throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        authenticate(merchant);
+
+        mockMvc.perform(post("/api/v1/payments/pay_" + UUID.randomUUID() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(requestBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(paymentService);
     }
 
     private void authenticate(Merchant merchant) {

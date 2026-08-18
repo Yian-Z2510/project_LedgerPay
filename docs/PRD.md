@@ -65,12 +65,12 @@ Payments and refunds do **not** auto-complete. The integrator must explicitly si
 
 ### Payment
 
-1. **Create** — A new payment starts in `created` status.
-2. **Simulate** — The integrator calls a simulate action with `success` or `failure`. The payment moves to `succeeded` or `failed`.
+1. **Create** — A new payment starts in `PENDING` status.
+2. **Simulate** — The integrator calls a simulate action with `SUCCEEDED` or `FAILED`. Only a `PENDING` Payment may transition, and the resulting status is terminal.
 
 ### Refund
 
-1. **Create** — The integrator requests a refund on a `succeeded` or `partially_refunded` payment.
+1. **Create** — The integrator requests a refund on a `SUCCEEDED` Payment with available refundable capacity.
   - If the request is **invalid** (e.g. payment not refundable, amount too high), the refund is `**failed` immediately** and a `refund.failed` webhook is sent.
   - If the request is **valid**, the refund is `**pending`** and waits for simulation. The payment balance does **not** change yet.
 2. **Simulate** — The integrator calls a simulate action with `success` or `failure`.
@@ -82,26 +82,26 @@ Payments and refunds do **not** auto-complete. The integrator must explicitly si
 ### Statuses
 
 
-| Status               | Meaning                                  |
-| -------------------- | ---------------------------------------- |
-| `created`            | Payment recorded; waiting for simulation |
-| `processing`         | Brief step while simulation runs         |
-| `succeeded`          | Payment completed successfully           |
-| `failed`             | Payment failed; no further action        |
-| `partially_refunded` | Some amount refunded; balance remains    |
-| `refunded`           | Full amount refunded                     |
+| Status      | Meaning                                  |
+| ----------- | ---------------------------------------- |
+| `PENDING`   | Payment recorded; waiting for simulation |
+| `SUCCEEDED` | Payment completed successfully            |
+| `FAILED`    | Payment failed; no further transition     |
 
 
 ### Main flow
 
-`created` → (simulate) → `succeeded` or `failed`
+`PENDING` → (simulate) → `SUCCEEDED` or `FAILED`
 
-After `succeeded`, refunds are created separately (see Refund Lifecycle). The payment moves to `partially_refunded` or `refunded` only when a refund simulation **succeeds**.
+After `SUCCEEDED`, refunds are created separately (see Refund Lifecycle).
+Refund progress is represented by the Payment refund aggregate fields and the
+related Order lifecycle/status; it does not add refund-progress statuses to the
+Payment state machine.
 
 ### Rules
 
-- Simulate payment only when status is `created`.
-- Cannot simulate a `failed` or `refunded` payment.
+- Simulate a Payment only when its status is `PENDING`.
+- `SUCCEEDED` and `FAILED` Payments are terminal and cannot be simulated again.
 
 ## Refund Lifecycle
 
@@ -126,14 +126,16 @@ After `succeeded`, refunds are created separately (see Refund Lifecycle). The pa
 
 `pending` → (simulate) → `succeeded` or `failed`
 
-On `succeeded`, the payment becomes `partially_refunded` or `refunded` depending on remaining balance.
+On `succeeded`, the Payment refund aggregate fields are updated. The related
+Order becomes `PARTIALLY_REFUNDED` or `REFUNDED` depending on the remaining
+refundable balance; the Payment remains `SUCCEEDED`.
 
 ### Rules
 
 - Simulate refund only when status is `pending`.
-- Create refund only when payment status is `succeeded` or `partially_refunded`.
+- Create a refund only when the Payment status is `SUCCEEDED` and refundable capacity remains.
 - Multiple partial refunds are allowed until the full payment amount is refunded.
-- Payment `amount_refunded` and status update **only** when a refund reaches `succeeded`.
+- Payment refund aggregate fields update **only** when a refund reaches `succeeded`.
 
 ## Refund Rules
 
@@ -222,4 +224,3 @@ The project is considered complete when:
 - Main business logic has unit tests
 - README explains how to run and test the project
 - This PRD is up to date in the `docs/` folder
-

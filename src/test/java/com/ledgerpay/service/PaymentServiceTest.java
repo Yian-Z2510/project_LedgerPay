@@ -25,16 +25,25 @@ import com.ledgerpay.entity.OrderCurrency;
 import com.ledgerpay.entity.OrderStatus;
 import com.ledgerpay.entity.Payment;
 import com.ledgerpay.entity.PaymentFailureCode;
+import com.ledgerpay.entity.PaymentSimulationOutcome;
 import com.ledgerpay.entity.PaymentStatus;
+import com.ledgerpay.entity.WebhookEvent;
+import com.ledgerpay.entity.WebhookEventType;
+import com.ledgerpay.entity.WebhookStatus;
 import com.ledgerpay.exception.OrderAlreadyPaidException;
 import com.ledgerpay.exception.OrderInvalidStateException;
 import com.ledgerpay.exception.OrderNotFoundException;
 import com.ledgerpay.exception.PaymentAlreadyPendingException;
+import com.ledgerpay.exception.PaymentInvalidStateException;
 import com.ledgerpay.exception.PaymentNotFoundException;
 import com.ledgerpay.repository.OrderRepository;
 import com.ledgerpay.repository.PaymentRepository;
+import com.ledgerpay.repository.WebhookEventRepository;
+
+import tools.jackson.databind.ObjectMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -55,11 +64,18 @@ class PaymentServiceTest {
     @Mock
     private OrderRepository orderRepository;
 
+    @Mock
+    private WebhookEventRepository webhookEventRepository;
+
     private PaymentService paymentService;
 
     @BeforeEach
     void setUp() {
-        paymentService = new PaymentService(paymentRepository, orderRepository);
+        paymentService = new PaymentService(
+                paymentRepository,
+                orderRepository,
+                webhookEventRepository,
+                new ObjectMapper());
     }
 
     @Test
@@ -366,11 +382,179 @@ class PaymentServiceTest {
         assertTrue(createPayment.isAnnotationPresent(Transactional.class));
     }
 
+    @Test
+    void simulatePaymentSucceedsAndPersistsTerminalSnapshotEvent() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.PAYMENT_PENDING);
+        Payment payment = persistedPayment(order, "simulate-success-key");
+        when(paymentRepository.findByIdAndMerchantId(
+                        payment.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(payment));
+        when(paymentRepository.save(payment)).thenReturn(payment);
+        when(webhookEventRepository.save(any(WebhookEvent.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        Payment result = paymentService.simulatePayment(
+                authenticatedMerchant,
+                payment.getId(),
+                PaymentSimulationOutcome.SUCCEEDED,
+                null);
+
+        ArgumentCaptor<WebhookEvent> eventCaptor = ArgumentCaptor.forClass(WebhookEvent.class);
+        assertSame(payment, result);
+        assertEquals(PaymentStatus.SUCCEEDED, payment.getStatus());
+        assertNotNull(payment.getCompletedAt());
+        assertNull(payment.getFailureCode());
+        assertEquals(OrderStatus.PAID, order.getStatus());
+        verify(paymentRepository).findByIdAndMerchantId(
+                payment.getId(),
+                authenticatedMerchant.getId());
+        verify(paymentRepository).save(payment);
+        verify(orderRepository).save(order);
+        verify(orderRepository, never()).findForUpdateByIdAndMerchantId(any(), any());
+        verify(webhookEventRepository).save(eventCaptor.capture());
+
+        WebhookEvent event = eventCaptor.getValue();
+        assertSame(authenticatedMerchant, event.getMerchant());
+        assertSame(payment, event.getPayment());
+        assertEquals(WebhookEventType.PAYMENT_SUCCEEDED, event.getEventType());
+        assertEquals(WebhookStatus.PENDING, event.getStatus());
+        assertEquals(0, event.getAttemptCount());
+        assertNull(event.getLastAttemptAt());
+        assertNull(event.getDeliveredAt());
+        assertNull(event.getLastFailureCode());
+        assertEquals(
+                "pay_" + payment.getId(),
+                event.getPayload().path("payment").path("id").stringValue());
+        assertEquals(
+                "ord_" + order.getId(),
+                event.getPayload().path("payment").path("orderId").stringValue());
+        assertEquals(1000L, event.getPayload().path("payment").path("amount").longValue());
+        assertEquals("EUR", event.getPayload().path("payment").path("currency").stringValue());
+        assertEquals("SUCCEEDED", event.getPayload().path("payment").path("status").stringValue());
+        assertTrue(event.getPayload().path("payment").path("failureCode").isNull());
+    }
+
+    @ParameterizedTest
+    @MethodSource("paymentFailureCodes")
+    void simulatePaymentFailsAndPersistsRequestedFailureSnapshot(
+            PaymentFailureCode failureCode) {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.PAYMENT_PENDING);
+        Payment payment = persistedPayment(order, "simulate-failure-key");
+        when(paymentRepository.findByIdAndMerchantId(
+                        payment.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(payment));
+        when(paymentRepository.save(payment)).thenReturn(payment);
+        when(webhookEventRepository.save(any(WebhookEvent.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        Payment result = paymentService.simulatePayment(
+                authenticatedMerchant,
+                payment.getId(),
+                PaymentSimulationOutcome.FAILED,
+                failureCode);
+
+        ArgumentCaptor<WebhookEvent> eventCaptor = ArgumentCaptor.forClass(WebhookEvent.class);
+        assertSame(payment, result);
+        assertEquals(PaymentStatus.FAILED, payment.getStatus());
+        assertNotNull(payment.getCompletedAt());
+        assertEquals(failureCode, payment.getFailureCode());
+        assertEquals(OrderStatus.PAYMENT_PENDING, order.getStatus());
+        verify(paymentRepository).findByIdAndMerchantId(
+                payment.getId(),
+                authenticatedMerchant.getId());
+        verify(paymentRepository).save(payment);
+        verify(orderRepository, never()).save(any(MerchantOrder.class));
+        verify(orderRepository, never()).findForUpdateByIdAndMerchantId(any(), any());
+        verify(webhookEventRepository).save(eventCaptor.capture());
+
+        WebhookEvent event = eventCaptor.getValue();
+        assertEquals(WebhookEventType.PAYMENT_FAILED, event.getEventType());
+        assertEquals("FAILED", event.getPayload().path("payment").path("status").stringValue());
+        assertEquals(
+                failureCode.name(),
+                event.getPayload().path("payment").path("failureCode").stringValue());
+    }
+
+    @Test
+    void simulatePaymentTreatsMissingOrCrossMerchantPaymentAsNotFound() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        UUID paymentId = UUID.randomUUID();
+        when(paymentRepository.findByIdAndMerchantId(paymentId, authenticatedMerchant.getId()))
+                .thenReturn(Optional.empty());
+
+        assertThrows(
+                PaymentNotFoundException.class,
+                () -> paymentService.simulatePayment(
+                        authenticatedMerchant,
+                        paymentId,
+                        PaymentSimulationOutcome.SUCCEEDED,
+                        null));
+
+        verify(paymentRepository).findByIdAndMerchantId(
+                paymentId,
+                authenticatedMerchant.getId());
+        verifyNoInteractions(orderRepository, webhookEventRepository);
+    }
+
+    @ParameterizedTest
+    @MethodSource("terminalPaymentStatuses")
+    void simulatePaymentRejectsTerminalPaymentWithoutCreatingEvent(PaymentStatus status) {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.PAYMENT_PENDING);
+        Payment payment = persistedPayment(order, "terminal-payment-key");
+        if (status == PaymentStatus.SUCCEEDED) {
+            payment.markSucceeded(Instant.now());
+        } else {
+            payment.markFailed(PaymentFailureCode.PAYMENT_DECLINED, Instant.now());
+        }
+        when(paymentRepository.findByIdAndMerchantId(
+                        payment.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(payment));
+
+        assertThrows(
+                PaymentInvalidStateException.class,
+                () -> paymentService.simulatePayment(
+                        authenticatedMerchant,
+                        payment.getId(),
+                        PaymentSimulationOutcome.SUCCEEDED,
+                        null));
+
+        verify(paymentRepository, never()).save(any(Payment.class));
+        verifyNoInteractions(orderRepository, webhookEventRepository);
+    }
+
+    @Test
+    void simulatePaymentIsTransactional() throws NoSuchMethodException {
+        Method simulatePayment = PaymentService.class.getMethod(
+                "simulatePayment",
+                Merchant.class,
+                UUID.class,
+                PaymentSimulationOutcome.class,
+                PaymentFailureCode.class);
+
+        assertTrue(simulatePayment.isAnnotationPresent(Transactional.class));
+    }
+
     private static Stream<OrderStatus> invalidOrderStatuses() {
         return Stream.of(
                 OrderStatus.CANCELLED,
                 OrderStatus.PARTIALLY_REFUNDED,
                 OrderStatus.REFUNDED);
+    }
+
+    private static Stream<PaymentFailureCode> paymentFailureCodes() {
+        return Stream.of(
+                PaymentFailureCode.PAYMENT_DECLINED,
+                PaymentFailureCode.PROCESSING_ERROR);
+    }
+
+    private static Stream<PaymentStatus> terminalPaymentStatuses() {
+        return Stream.of(PaymentStatus.SUCCEEDED, PaymentStatus.FAILED);
     }
 
     private Merchant persistedMerchant() {
@@ -387,5 +571,11 @@ class PaymentServiceTest {
         ReflectionTestUtils.setField(order, "id", UUID.randomUUID());
         order.setStatus(status);
         return order;
+    }
+
+    private Payment persistedPayment(MerchantOrder order, String idempotencyKey) {
+        Payment payment = new Payment(order, idempotencyKey);
+        ReflectionTestUtils.setField(payment, "id", UUID.randomUUID());
+        return payment;
     }
 }

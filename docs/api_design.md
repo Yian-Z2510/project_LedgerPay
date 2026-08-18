@@ -1138,7 +1138,8 @@ No `Idempotency-Key` header is used.
 }
 ```
 
-`failureCode` must be absent.
+For `SUCCEEDED`, `failureCode` may be omitted or explicitly `null`. A non-null
+`failureCode` is invalid.
 
 ### Failure request
 
@@ -1156,7 +1157,7 @@ PAYMENT_DECLINED
 PROCESSING_ERROR
 ```
 
-For `FAILED`, `failureCode` is required.
+For `FAILED`, `failureCode` is required and must be non-null.
 
 ### Preconditions
 

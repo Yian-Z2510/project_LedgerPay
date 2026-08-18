@@ -26,6 +26,7 @@ public class GlobalExceptionHandler {
     private static final String ORDER_NOT_FOUND = "ORDER_NOT_FOUND";
     private static final String PAYMENT_NOT_FOUND = "PAYMENT_NOT_FOUND";
     private static final String PAYMENT_ALREADY_PENDING = "PAYMENT_ALREADY_PENDING";
+    private static final String PAYMENT_INVALID_STATE = "PAYMENT_INVALID_STATE";
     private static final String ORDER_ALREADY_PAID = "ORDER_ALREADY_PAID";
     private static final String ORDER_INVALID_STATE = "ORDER_INVALID_STATE";
     private static final String INTERNAL_ERROR = "INTERNAL_ERROR";
@@ -117,6 +118,15 @@ public class GlobalExceptionHandler {
                 .body(new ApiErrorResponse(
                         PAYMENT_ALREADY_PENDING,
                         "Order already has a pending Payment."));
+    }
+
+    @ExceptionHandler(PaymentInvalidStateException.class)
+    public ResponseEntity<ApiErrorResponse> handlePaymentInvalidState(
+            PaymentInvalidStateException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(
+                        PAYMENT_INVALID_STATE,
+                        "Payment is no longer pending."));
     }
 
     @ExceptionHandler(OrderAlreadyPaidException.class)

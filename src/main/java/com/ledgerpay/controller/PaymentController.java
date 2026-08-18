@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.ledgerpay.dto.CreatePaymentRequest;
 import com.ledgerpay.dto.PaymentResponse;
+import com.ledgerpay.dto.SimulatePaymentRequest;
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.Payment;
 import com.ledgerpay.exception.InvalidIdempotencyKeyException;
@@ -61,6 +62,19 @@ public class PaymentController {
         Payment payment = paymentService.getPayment(
                 authenticatedMerchant,
                 parsePaymentId(paymentId));
+        return toPaymentResponse(payment);
+    }
+
+    @PostMapping("/payments/{paymentId}/simulate")
+    public PaymentResponse simulatePayment(
+            @AuthenticationPrincipal Merchant authenticatedMerchant,
+            @PathVariable String paymentId,
+            @Valid @RequestBody SimulatePaymentRequest request) {
+        Payment payment = paymentService.simulatePayment(
+                authenticatedMerchant,
+                parsePaymentId(paymentId),
+                request.outcome(),
+                request.failureCode());
         return toPaymentResponse(payment);
     }
 
