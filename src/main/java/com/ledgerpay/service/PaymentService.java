@@ -1,5 +1,6 @@
 package com.ledgerpay.service;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -10,26 +11,42 @@ import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.MerchantOrder;
 import com.ledgerpay.entity.OrderStatus;
 import com.ledgerpay.entity.Payment;
+import com.ledgerpay.entity.PaymentFailureCode;
+import com.ledgerpay.entity.PaymentSimulationOutcome;
 import com.ledgerpay.entity.PaymentStatus;
+import com.ledgerpay.entity.WebhookEvent;
+import com.ledgerpay.entity.WebhookEventType;
 import com.ledgerpay.exception.OrderAlreadyPaidException;
 import com.ledgerpay.exception.OrderInvalidStateException;
 import com.ledgerpay.exception.OrderNotFoundException;
 import com.ledgerpay.exception.PaymentAlreadyPendingException;
+import com.ledgerpay.exception.PaymentInvalidStateException;
 import com.ledgerpay.exception.PaymentNotFoundException;
 import com.ledgerpay.repository.OrderRepository;
 import com.ledgerpay.repository.PaymentRepository;
+import com.ledgerpay.repository.WebhookEventRepository;
+
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 @Service
 public class PaymentService {
 
     private final PaymentRepository paymentRepository;
     private final OrderRepository orderRepository;
+    private final WebhookEventRepository webhookEventRepository;
+    private final ObjectMapper objectMapper;
 
     public PaymentService(
             PaymentRepository paymentRepository,
-            OrderRepository orderRepository) {
+            OrderRepository orderRepository,
+            WebhookEventRepository webhookEventRepository,
+            ObjectMapper objectMapper) {
         this.paymentRepository = paymentRepository;
         this.orderRepository = orderRepository;
+        this.webhookEventRepository = webhookEventRepository;
+        this.objectMapper = objectMapper;
     }
 
     public Payment getPayment(Merchant authenticatedMerchant, UUID paymentId) {
@@ -86,5 +103,61 @@ public class PaymentService {
         }
 
         return savedPayment;
+    }
+
+    @Transactional
+    public Payment simulatePayment(
+            Merchant authenticatedMerchant,
+            UUID paymentId,
+            PaymentSimulationOutcome outcome,
+            PaymentFailureCode failureCode) {
+        Payment payment = paymentRepository.findByIdAndMerchantId(
+                        paymentId,
+                        authenticatedMerchant.getId())
+                .orElseThrow(PaymentNotFoundException::new);
+
+        if (payment.getStatus() != PaymentStatus.PENDING) {
+            throw new PaymentInvalidStateException();
+        }
+
+        Instant completedAt = Instant.now();
+        WebhookEventType eventType;
+
+        if (outcome == PaymentSimulationOutcome.SUCCEEDED) {
+            payment.markSucceeded(completedAt);
+            payment.getOrder().setStatus(OrderStatus.PAID);
+            orderRepository.save(payment.getOrder());
+            eventType = WebhookEventType.PAYMENT_SUCCEEDED;
+        } else {
+            payment.markFailed(failureCode, completedAt);
+            eventType = WebhookEventType.PAYMENT_FAILED;
+        }
+
+        Payment savedPayment = paymentRepository.save(payment);
+        webhookEventRepository.save(new WebhookEvent(
+                savedPayment,
+                eventType,
+                createWebhookPayload(savedPayment)));
+
+        return savedPayment;
+    }
+
+    private JsonNode createWebhookPayload(Payment payment) {
+        ObjectNode paymentSnapshot = objectMapper.createObjectNode();
+        paymentSnapshot.put("id", "pay_" + payment.getId());
+        paymentSnapshot.put("orderId", "ord_" + payment.getOrder().getId());
+        paymentSnapshot.put("amount", payment.getAmount());
+        paymentSnapshot.put("currency", payment.getCurrency().name());
+        paymentSnapshot.put("status", payment.getStatus().name());
+
+        if (payment.getFailureCode() == null) {
+            paymentSnapshot.putNull("failureCode");
+        } else {
+            paymentSnapshot.put("failureCode", payment.getFailureCode().name());
+        }
+
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.set("payment", paymentSnapshot);
+        return payload;
     }
 }
