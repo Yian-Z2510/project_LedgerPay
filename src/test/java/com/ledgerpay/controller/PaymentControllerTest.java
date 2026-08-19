@@ -23,6 +23,7 @@ import com.ledgerpay.entity.Payment;
 import com.ledgerpay.entity.PaymentFailureCode;
 import com.ledgerpay.entity.PaymentSimulationOutcome;
 import com.ledgerpay.exception.GlobalExceptionHandler;
+import com.ledgerpay.exception.IdempotencyConflictException;
 import com.ledgerpay.exception.OrderAlreadyPaidException;
 import com.ledgerpay.exception.OrderInvalidStateException;
 import com.ledgerpay.exception.OrderNotFoundException;
@@ -33,6 +34,7 @@ import com.ledgerpay.repository.MerchantRepository;
 import com.ledgerpay.security.LedgerPayAuthenticationEntryPoint;
 import com.ledgerpay.security.SecurityConfiguration;
 import com.ledgerpay.service.ApiKeyService;
+import com.ledgerpay.service.PaymentCreationResult;
 import com.ledgerpay.service.PaymentService;
 
 import static org.mockito.Mockito.verify;
@@ -80,7 +82,7 @@ class PaymentControllerTest {
         Payment payment = pendingPayment(order, UUID.randomUUID(), IDEMPOTENCY_KEY);
         authenticate(merchant);
         when(paymentService.createPayment(merchant, order.getId(), IDEMPOTENCY_KEY))
-                .thenReturn(payment);
+                .thenReturn(new PaymentCreationResult(payment, false));
 
         mockMvc.perform(post("/api/v1/payments")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
@@ -105,6 +107,33 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.updatedAt").value(UPDATED_AT.toString()))
                 .andExpect(jsonPath("$.merchantId").doesNotExist())
                 .andExpect(jsonPath("$.idempotencyKey").doesNotExist());
+
+        verify(paymentService).createPayment(merchant, order.getId(), IDEMPOTENCY_KEY);
+    }
+
+    @Test
+    void createPaymentReplayReturnsCurrentRepresentationWithOkAndNoLocationHeader()
+            throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        MerchantOrder order = persistedOrder(merchant, OrderStatus.PAID);
+        Payment payment = failedPayment(order, UUID.randomUUID(), IDEMPOTENCY_KEY);
+        authenticate(merchant);
+        when(paymentService.createPayment(merchant, order.getId(), IDEMPOTENCY_KEY))
+                .thenReturn(new PaymentCreationResult(payment, true));
+
+        mockMvc.perform(post("/api/v1/payments")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .header("Idempotency-Key", IDEMPOTENCY_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"orderId":"ord_%s"}
+                                """.formatted(order.getId())))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist(HttpHeaders.LOCATION))
+                .andExpect(jsonPath("$.id").value("pay_" + payment.getId()))
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.failureCode").value("PAYMENT_DECLINED"))
+                .andExpect(jsonPath("$.completedAt").value(COMPLETED_AT.toString()));
 
         verify(paymentService).createPayment(merchant, order.getId(), IDEMPOTENCY_KEY);
     }
@@ -236,7 +265,7 @@ class PaymentControllerTest {
         Payment payment = pendingPayment(order, UUID.randomUUID(), whitespaceKey);
         authenticate(merchant);
         when(paymentService.createPayment(merchant, order.getId(), whitespaceKey))
-                .thenReturn(payment);
+                .thenReturn(new PaymentCreationResult(payment, false));
 
         mockMvc.perform(post("/api/v1/payments")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
@@ -284,6 +313,15 @@ class PaymentControllerTest {
                 409,
                 "ORDER_INVALID_STATE",
                 "Order cannot accept a Payment in its current state.");
+    }
+
+    @Test
+    void createPaymentMapsIdempotencyConflict() throws Exception {
+        assertCreateError(
+                new IdempotencyConflictException(),
+                409,
+                "IDEMPOTENCY_CONFLICT",
+                "Idempotency-Key was already used for a different request.");
     }
 
     @Test

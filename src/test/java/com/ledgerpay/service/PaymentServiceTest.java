@@ -16,7 +16,11 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.ledgerpay.entity.Merchant;
@@ -30,6 +34,7 @@ import com.ledgerpay.entity.PaymentStatus;
 import com.ledgerpay.entity.WebhookEvent;
 import com.ledgerpay.entity.WebhookEventType;
 import com.ledgerpay.entity.WebhookStatus;
+import com.ledgerpay.exception.IdempotencyConflictException;
 import com.ledgerpay.exception.OrderAlreadyPaidException;
 import com.ledgerpay.exception.OrderInvalidStateException;
 import com.ledgerpay.exception.OrderNotFoundException;
@@ -43,6 +48,7 @@ import com.ledgerpay.repository.WebhookEventRepository;
 import tools.jackson.databind.ObjectMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -50,7 +56,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -67,15 +75,24 @@ class PaymentServiceTest {
     @Mock
     private WebhookEventRepository webhookEventRepository;
 
+    @Mock
+    private PlatformTransactionManager transactionManager;
+
+    @Mock
+    private TransactionStatus transactionStatus;
+
     private PaymentService paymentService;
 
     @BeforeEach
     void setUp() {
+        lenient().when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+                .thenReturn(transactionStatus);
         paymentService = new PaymentService(
                 paymentRepository,
                 orderRepository,
                 webhookEventRepository,
-                new ObjectMapper());
+                new ObjectMapper(),
+                transactionManager);
     }
 
     @Test
@@ -181,9 +198,10 @@ class PaymentServiceTest {
                         order.getId(),
                         authenticatedMerchant.getId()))
                 .thenReturn(Optional.of(order));
-        when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(paymentRepository.saveAndFlush(any(Payment.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
-        Payment result = paymentService.createPayment(
+        PaymentCreationResult result = paymentService.createPayment(
                 authenticatedMerchant,
                 order.getId(),
                 idempotencyKey);
@@ -199,11 +217,12 @@ class PaymentServiceTest {
         inOrder.verify(paymentRepository).existsByOrderIdAndStatus(
                 order.getId(),
                 PaymentStatus.SUCCEEDED);
-        inOrder.verify(paymentRepository).save(paymentCaptor.capture());
+        inOrder.verify(paymentRepository).saveAndFlush(paymentCaptor.capture());
         inOrder.verify(orderRepository).save(order);
 
         Payment savedPayment = paymentCaptor.getValue();
-        assertSame(savedPayment, result);
+        assertSame(savedPayment, result.payment());
+        assertFalse(result.replayed());
         assertSame(authenticatedMerchant, savedPayment.getMerchant());
         assertSame(order, savedPayment.getOrder());
         assertEquals(order.getAmount(), savedPayment.getAmount());
@@ -231,19 +250,271 @@ class PaymentServiceTest {
                 .thenReturn(false);
         when(paymentRepository.existsByOrderIdAndStatus(order.getId(), PaymentStatus.SUCCEEDED))
                 .thenReturn(false);
-        when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(paymentRepository.saveAndFlush(any(Payment.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
 
-        Payment result = paymentService.createPayment(
+        PaymentCreationResult result = paymentService.createPayment(
                 authenticatedMerchant,
                 order.getId(),
                 "retry-after-failure-key");
 
         assertEquals(PaymentStatus.FAILED, historicalPayment.getStatus());
-        assertEquals(PaymentStatus.PENDING, result.getStatus());
-        assertEquals("retry-after-failure-key", result.getIdempotencyKey());
+        assertEquals(PaymentStatus.PENDING, result.payment().getStatus());
+        assertEquals("retry-after-failure-key", result.payment().getIdempotencyKey());
+        assertFalse(result.replayed());
         assertEquals(OrderStatus.PAYMENT_PENDING, order.getStatus());
-        verify(paymentRepository).save(any(Payment.class));
+        verify(paymentRepository).saveAndFlush(any(Payment.class));
         verify(orderRepository, never()).save(any(MerchantOrder.class));
+    }
+
+    @Test
+    void createPaymentReplaysCurrentHistoricalPaymentBeforeOrderLookup() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.PAID);
+        Payment historicalPayment = persistedPayment(order, "historical-key");
+        Instant completedAt = Instant.parse("2026-08-19T10:00:00Z");
+        historicalPayment.markFailed(PaymentFailureCode.PAYMENT_DECLINED, completedAt);
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        "historical-key"))
+                .thenReturn(Optional.of(historicalPayment));
+
+        PaymentCreationResult result = paymentService.createPayment(
+                authenticatedMerchant,
+                order.getId(),
+                "historical-key");
+
+        assertSame(historicalPayment, result.payment());
+        assertTrue(result.replayed());
+        assertEquals(PaymentStatus.FAILED, result.payment().getStatus());
+        assertEquals(PaymentFailureCode.PAYMENT_DECLINED, result.payment().getFailureCode());
+        assertEquals(completedAt, result.payment().getCompletedAt());
+        verifyNoInteractions(orderRepository);
+        verifyNoInteractions(transactionManager);
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
+        verify(paymentRepository, never()).existsByOrderIdAndStatus(any(), any());
+    }
+
+    @Test
+    void createPaymentRejectsIdempotencyKeyReusedForDifferentOrderBeforeOrderLookup() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder originalOrder = persistedOrder(authenticatedMerchant, OrderStatus.PAYMENT_PENDING);
+        Payment historicalPayment = persistedPayment(originalOrder, "reused-key");
+        UUID differentOrderId = UUID.randomUUID();
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        "reused-key"))
+                .thenReturn(Optional.of(historicalPayment));
+
+        assertThrows(
+                IdempotencyConflictException.class,
+                () -> paymentService.createPayment(
+                        authenticatedMerchant,
+                        differentOrderId,
+                        "reused-key"));
+
+        verifyNoInteractions(orderRepository);
+        verifyNoInteractions(transactionManager);
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
+    }
+
+    @Test
+    void createPaymentReplaysPaymentFoundBySecondLookupAfterOrderLock() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.PAID);
+        Payment historicalPayment = persistedPayment(order, "second-lookup-key");
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        "second-lookup-key"))
+                .thenReturn(Optional.empty(), Optional.of(historicalPayment));
+        when(orderRepository.findForUpdateByIdAndMerchantId(
+                        order.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(order));
+
+        PaymentCreationResult result = paymentService.createPayment(
+                authenticatedMerchant,
+                order.getId(),
+                "second-lookup-key");
+
+        assertSame(historicalPayment, result.payment());
+        assertTrue(result.replayed());
+        InOrder inOrder = inOrder(paymentRepository, transactionManager, orderRepository);
+        inOrder.verify(paymentRepository).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "second-lookup-key");
+        inOrder.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
+        inOrder.verify(orderRepository).findForUpdateByIdAndMerchantId(
+                order.getId(),
+                authenticatedMerchant.getId());
+        inOrder.verify(paymentRepository).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "second-lookup-key");
+        inOrder.verify(transactionManager).commit(transactionStatus);
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
+        verify(paymentRepository, never()).existsByOrderIdAndStatus(any(), any());
+    }
+
+    @Test
+    void createPaymentRejectsDifferentOrderFoundBySecondLookupAfterOrderLock() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder requestedOrder = persistedOrder(authenticatedMerchant, OrderStatus.CREATED);
+        MerchantOrder originalOrder = persistedOrder(authenticatedMerchant, OrderStatus.PAYMENT_PENDING);
+        Payment historicalPayment = persistedPayment(originalOrder, "second-conflict-key");
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        "second-conflict-key"))
+                .thenReturn(Optional.empty(), Optional.of(historicalPayment));
+        when(orderRepository.findForUpdateByIdAndMerchantId(
+                        requestedOrder.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(requestedOrder));
+
+        assertThrows(
+                IdempotencyConflictException.class,
+                () -> paymentService.createPayment(
+                        authenticatedMerchant,
+                        requestedOrder.getId(),
+                        "second-conflict-key"));
+
+        verify(transactionManager).rollback(transactionStatus);
+        verify(transactionManager, never()).commit(any(TransactionStatus.class));
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
+        verify(paymentRepository, never()).existsByOrderIdAndStatus(any(), any());
+    }
+
+    @Test
+    void createPaymentRecoversSameOrderWinnerAfterWriteTransactionRollsBack() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.CREATED);
+        Payment winningPayment = persistedPayment(order, "race-key");
+        DataIntegrityViolationException integrityException =
+                new DataIntegrityViolationException("duplicate idempotency key");
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        "race-key"))
+                .thenReturn(Optional.empty(), Optional.empty(), Optional.of(winningPayment));
+        when(orderRepository.findForUpdateByIdAndMerchantId(
+                        order.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(paymentRepository.saveAndFlush(any(Payment.class)))
+                .thenThrow(integrityException);
+
+        PaymentCreationResult result = paymentService.createPayment(
+                authenticatedMerchant,
+                order.getId(),
+                "race-key");
+
+        assertSame(winningPayment, result.payment());
+        assertTrue(result.replayed());
+        InOrder inOrder = inOrder(paymentRepository, transactionManager, orderRepository);
+        inOrder.verify(paymentRepository).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "race-key");
+        inOrder.verify(transactionManager).getTransaction(any(TransactionDefinition.class));
+        inOrder.verify(orderRepository).findForUpdateByIdAndMerchantId(
+                order.getId(),
+                authenticatedMerchant.getId());
+        inOrder.verify(paymentRepository).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "race-key");
+        inOrder.verify(paymentRepository).saveAndFlush(any(Payment.class));
+        inOrder.verify(transactionManager).rollback(transactionStatus);
+        inOrder.verify(paymentRepository).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "race-key");
+        verify(transactionManager, never()).commit(any(TransactionStatus.class));
+    }
+
+    @Test
+    void createPaymentMapsDifferentOrderWinnerAfterRollbackToIdempotencyConflict() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder requestedOrder = persistedOrder(authenticatedMerchant, OrderStatus.CREATED);
+        MerchantOrder winningOrder = persistedOrder(authenticatedMerchant, OrderStatus.PAYMENT_PENDING);
+        Payment winningPayment = persistedPayment(winningOrder, "cross-order-race-key");
+        DataIntegrityViolationException integrityException =
+                new DataIntegrityViolationException("duplicate idempotency key");
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        "cross-order-race-key"))
+                .thenReturn(Optional.empty(), Optional.empty(), Optional.of(winningPayment));
+        when(orderRepository.findForUpdateByIdAndMerchantId(
+                        requestedOrder.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(requestedOrder));
+        when(paymentRepository.saveAndFlush(any(Payment.class)))
+                .thenThrow(integrityException);
+
+        assertThrows(
+                IdempotencyConflictException.class,
+                () -> paymentService.createPayment(
+                        authenticatedMerchant,
+                        requestedOrder.getId(),
+                        "cross-order-race-key"));
+
+        InOrder inOrder = inOrder(transactionManager, paymentRepository);
+        inOrder.verify(transactionManager).rollback(transactionStatus);
+        inOrder.verify(paymentRepository).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "cross-order-race-key");
+        verify(transactionManager, never()).commit(any(TransactionStatus.class));
+    }
+
+    @Test
+    void createPaymentRethrowsUnexpectedIntegrityViolationWhenNoWinnerExists() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.CREATED);
+        DataIntegrityViolationException integrityException =
+                new DataIntegrityViolationException("unrelated database constraint");
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        "unexpected-integrity-key"))
+                .thenReturn(Optional.empty());
+        when(orderRepository.findForUpdateByIdAndMerchantId(
+                        order.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(paymentRepository.saveAndFlush(any(Payment.class)))
+                .thenThrow(integrityException);
+
+        DataIntegrityViolationException thrown = assertThrows(
+                DataIntegrityViolationException.class,
+                () -> paymentService.createPayment(
+                        authenticatedMerchant,
+                        order.getId(),
+                        "unexpected-integrity-key"));
+
+        assertSame(integrityException, thrown);
+        InOrder inOrder = inOrder(transactionManager, paymentRepository);
+        inOrder.verify(transactionManager).rollback(transactionStatus);
+        inOrder.verify(paymentRepository).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "unexpected-integrity-key");
+        verify(transactionManager, never()).commit(any(TransactionStatus.class));
+    }
+
+    @Test
+    void createPaymentScopesIdempotencyLookupToAuthenticatedMerchant() {
+        Merchant authenticatedMerchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.CREATED);
+        when(orderRepository.findForUpdateByIdAndMerchantId(
+                        order.getId(),
+                        authenticatedMerchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(paymentRepository.saveAndFlush(any(Payment.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        PaymentCreationResult result = paymentService.createPayment(
+                authenticatedMerchant,
+                order.getId(),
+                "shared-key");
+
+        verify(paymentRepository, times(2)).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "shared-key");
+        assertEquals("shared-key", result.payment().getIdempotencyKey());
+        assertFalse(result.replayed());
     }
 
     @Test
@@ -259,7 +530,7 @@ class PaymentServiceTest {
                 OrderNotFoundException.class,
                 () -> paymentService.createPayment(authenticatedMerchant, orderId, "new-key"));
 
-        verifyNoInteractions(paymentRepository);
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
         verify(orderRepository, never()).save(any(MerchantOrder.class));
     }
 
@@ -280,12 +551,12 @@ class PaymentServiceTest {
                         order.getId(),
                         "new-key"));
 
-        verifyNoInteractions(paymentRepository);
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
         verify(orderRepository, never()).save(any(MerchantOrder.class));
     }
 
     @Test
-    void createPaymentRejectsCurrentPendingPayment() {
+    void createPaymentRejectsDifferentKeyWhenOrderAlreadyHasPendingPayment() {
         Merchant authenticatedMerchant = persistedMerchant();
         MerchantOrder order = persistedOrder(authenticatedMerchant, OrderStatus.PAYMENT_PENDING);
         when(orderRepository.findForUpdateByIdAndMerchantId(
@@ -302,7 +573,10 @@ class PaymentServiceTest {
                         order.getId(),
                         "new-key"));
 
-        verify(paymentRepository, never()).save(any(Payment.class));
+        verify(paymentRepository, times(2)).findByMerchantIdAndIdempotencyKey(
+                authenticatedMerchant.getId(),
+                "new-key");
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
         verify(orderRepository, never()).save(any(MerchantOrder.class));
     }
 
@@ -326,7 +600,7 @@ class PaymentServiceTest {
                         order.getId(),
                         "new-key"));
 
-        verify(paymentRepository, never()).save(any(Payment.class));
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
         verify(orderRepository, never()).save(any(MerchantOrder.class));
     }
 
@@ -346,7 +620,7 @@ class PaymentServiceTest {
                         order.getId(),
                         "new-key"));
 
-        verifyNoInteractions(paymentRepository);
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
         verify(orderRepository, never()).save(any(MerchantOrder.class));
     }
 
@@ -367,19 +641,8 @@ class PaymentServiceTest {
                         order.getId(),
                         "new-key"));
 
-        verifyNoInteractions(paymentRepository);
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
         verify(orderRepository, never()).save(any(MerchantOrder.class));
-    }
-
-    @Test
-    void createPaymentIsTransactional() throws NoSuchMethodException {
-        Method createPayment = PaymentService.class.getMethod(
-                "createPayment",
-                Merchant.class,
-                UUID.class,
-                String.class);
-
-        assertTrue(createPayment.isAnnotationPresent(Transactional.class));
     }
 
     @Test
