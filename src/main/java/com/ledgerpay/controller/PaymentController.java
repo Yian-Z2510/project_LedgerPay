@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -11,7 +12,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.ledgerpay.dto.CreatePaymentRequest;
@@ -22,6 +22,7 @@ import com.ledgerpay.entity.Payment;
 import com.ledgerpay.exception.InvalidIdempotencyKeyException;
 import com.ledgerpay.exception.InvalidOrderIdException;
 import com.ledgerpay.exception.InvalidPaymentIdException;
+import com.ledgerpay.service.PaymentCreationResult;
 import com.ledgerpay.service.PaymentService;
 
 import jakarta.validation.Valid;
@@ -41,18 +42,19 @@ public class PaymentController {
     }
 
     @PostMapping("/payments")
-    @ResponseStatus(HttpStatus.CREATED)
-    public PaymentResponse createPayment(
+    public ResponseEntity<PaymentResponse> createPayment(
             @AuthenticationPrincipal Merchant authenticatedMerchant,
             @Valid @RequestBody CreatePaymentRequest request,
             @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false)
             String idempotencyKey) {
         validateIdempotencyKey(idempotencyKey);
-        Payment payment = paymentService.createPayment(
+        PaymentCreationResult result = paymentService.createPayment(
                 authenticatedMerchant,
                 parseOrderId(request.orderId()),
                 idempotencyKey);
-        return toPaymentResponse(payment);
+        HttpStatus status = result.replayed() ? HttpStatus.OK : HttpStatus.CREATED;
+        return ResponseEntity.status(status)
+                .body(toPaymentResponse(result.payment()));
     }
 
     @GetMapping("/payments/{paymentId}")

@@ -4,8 +4,11 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.MerchantOrder;
@@ -16,6 +19,7 @@ import com.ledgerpay.entity.PaymentSimulationOutcome;
 import com.ledgerpay.entity.PaymentStatus;
 import com.ledgerpay.entity.WebhookEvent;
 import com.ledgerpay.entity.WebhookEventType;
+import com.ledgerpay.exception.IdempotencyConflictException;
 import com.ledgerpay.exception.OrderAlreadyPaidException;
 import com.ledgerpay.exception.OrderInvalidStateException;
 import com.ledgerpay.exception.OrderNotFoundException;
@@ -37,16 +41,19 @@ public class PaymentService {
     private final OrderRepository orderRepository;
     private final WebhookEventRepository webhookEventRepository;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate writeTransaction;
 
     public PaymentService(
             PaymentRepository paymentRepository,
             OrderRepository orderRepository,
             WebhookEventRepository webhookEventRepository,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            PlatformTransactionManager transactionManager) {
         this.paymentRepository = paymentRepository;
         this.orderRepository = orderRepository;
         this.webhookEventRepository = webhookEventRepository;
         this.objectMapper = objectMapper;
+        this.writeTransaction = new TransactionTemplate(transactionManager);
     }
 
     public Payment getPayment(Merchant authenticatedMerchant, UUID paymentId) {
@@ -64,8 +71,34 @@ public class PaymentService {
         return paymentRepository.findByOrderIdOrderByCreatedAtDesc(orderId);
     }
 
-    @Transactional
-    public Payment createPayment(
+    public PaymentCreationResult createPayment(
+            Merchant authenticatedMerchant,
+            UUID orderId,
+            String idempotencyKey) {
+        Payment historicalPayment = paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        idempotencyKey)
+                .orElse(null);
+
+        if (historicalPayment != null) {
+            return replayOrConflict(historicalPayment, orderId);
+        }
+
+        try {
+            return writeTransaction.execute(status -> createPaymentInWriteTransaction(
+                    authenticatedMerchant,
+                    orderId,
+                    idempotencyKey));
+        } catch (DataIntegrityViolationException exception) {
+            Payment winningPayment = paymentRepository.findByMerchantIdAndIdempotencyKey(
+                            authenticatedMerchant.getId(),
+                            idempotencyKey)
+                    .orElseThrow(() -> exception);
+            return replayOrConflict(winningPayment, orderId);
+        }
+    }
+
+    private PaymentCreationResult createPaymentInWriteTransaction(
             Merchant authenticatedMerchant,
             UUID orderId,
             String idempotencyKey) {
@@ -73,6 +106,15 @@ public class PaymentService {
                         orderId,
                         authenticatedMerchant.getId())
                 .orElseThrow(OrderNotFoundException::new);
+
+        Payment historicalPayment = paymentRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        idempotencyKey)
+                .orElse(null);
+
+        if (historicalPayment != null) {
+            return replayOrConflict(historicalPayment, orderId);
+        }
 
         if (!order.getMerchant().getId().equals(authenticatedMerchant.getId())) {
             throw new OrderNotFoundException();
@@ -95,14 +137,21 @@ public class PaymentService {
             throw new OrderAlreadyPaidException();
         }
 
-        Payment savedPayment = paymentRepository.save(new Payment(order, idempotencyKey));
+        Payment savedPayment = paymentRepository.saveAndFlush(new Payment(order, idempotencyKey));
 
         if (order.getStatus() == OrderStatus.CREATED) {
             order.setStatus(OrderStatus.PAYMENT_PENDING);
             orderRepository.save(order);
         }
 
-        return savedPayment;
+        return new PaymentCreationResult(savedPayment, false);
+    }
+
+    private PaymentCreationResult replayOrConflict(Payment payment, UUID requestedOrderId) {
+        if (!payment.getOrder().getId().equals(requestedOrderId)) {
+            throw new IdempotencyConflictException();
+        }
+        return new PaymentCreationResult(payment, true);
     }
 
     @Transactional
