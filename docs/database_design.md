@@ -279,6 +279,11 @@ only when there is no currently PENDING Payment
 
 A paid or refunded order cannot be directly cancelled. After payment, money must be returned through the Refund flow.
 
+Payment creation, Order amount modification, and Order cancellation acquire the
+same pessimistic write lock on the merchant-owned `merchant_order` row. Each flow
+rechecks its status and Payment eligibility after acquiring the lock, so these
+writes cannot pass conflicting preconditions concurrently.
+
 ### Order modification rule
 
 `amount` may be modified only when both conditions are true:

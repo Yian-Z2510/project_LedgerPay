@@ -18,10 +18,12 @@ import org.springframework.test.web.servlet.MockMvc;
 import com.ledgerpay.config.JacksonConfiguration;
 import com.ledgerpay.dto.CreateOrderRequest;
 import com.ledgerpay.dto.OrderResponse;
+import com.ledgerpay.dto.UpdateOrderRequest;
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.OrderCurrency;
 import com.ledgerpay.entity.OrderStatus;
 import com.ledgerpay.exception.GlobalExceptionHandler;
+import com.ledgerpay.exception.OrderInvalidStateException;
 import com.ledgerpay.exception.OrderNotFoundException;
 import com.ledgerpay.repository.MerchantRepository;
 import com.ledgerpay.security.LedgerPayAuthenticationEntryPoint;
@@ -33,6 +35,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -260,6 +263,170 @@ class OrderControllerTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
 
         verifyNoInteractions(orderService);
+    }
+
+    @Test
+    void updateOrderReturnsUpdatedRepresentation() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID orderId = UUID.randomUUID();
+        OrderResponse response = orderResponse(orderId, 1200L);
+        authenticate(merchant);
+        when(orderService.updateOrder(
+                        merchant,
+                        orderId,
+                        new UpdateOrderRequest(1200L)))
+                .thenReturn(response);
+
+        mockMvc.perform(patch("/api/v1/orders/ord_" + orderId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"amount":1200}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("ord_" + orderId))
+                .andExpect(jsonPath("$.amount").value(1200));
+
+        verify(orderService).updateOrder(
+                merchant,
+                orderId,
+                new UpdateOrderRequest(1200L));
+    }
+
+    @Test
+    void nonPositiveUpdateAmountReturnsValidationErrorWithoutCallingService() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        authenticate(merchant);
+
+        mockMvc.perform(patch("/api/v1/orders/ord_" + UUID.randomUUID())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"amount":0}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value("amount must be greater than 0"));
+
+        verifyNoInteractions(orderService);
+    }
+
+    @Test
+    void unsupportedUpdateFieldReturnsValidationErrorWithoutCallingService() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        authenticate(merchant);
+
+        mockMvc.perform(patch("/api/v1/orders/ord_" + UUID.randomUUID())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"amount":1200,"currency":"USD"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.message").value(
+                        "Malformed or invalid request body."));
+
+        verifyNoInteractions(orderService);
+    }
+
+    @Test
+    void updateInvalidStateReturnsOrderInvalidState() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID orderId = UUID.randomUUID();
+        authenticate(merchant);
+        when(orderService.updateOrder(
+                        merchant,
+                        orderId,
+                        new UpdateOrderRequest(1200L)))
+                .thenThrow(new OrderInvalidStateException("Order is not editable."));
+
+        mockMvc.perform(patch("/api/v1/orders/ord_" + orderId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"amount":1200}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ORDER_INVALID_STATE"))
+                .andExpect(jsonPath("$.message").value("Order is not editable."));
+    }
+
+    @Test
+    void updateCrossMerchantOrderReturnsOrderNotFound() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID orderId = UUID.randomUUID();
+        authenticate(merchant);
+        when(orderService.updateOrder(
+                        merchant,
+                        orderId,
+                        new UpdateOrderRequest(1200L)))
+                .thenThrow(new OrderNotFoundException());
+
+        mockMvc.perform(patch("/api/v1/orders/ord_" + orderId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"amount":1200}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("ORDER_NOT_FOUND"));
+    }
+
+    @Test
+    void cancelOrderReturnsCancelledRepresentation() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID orderId = UUID.randomUUID();
+        Instant cancelledAt = Instant.parse("2026-08-19T12:00:00Z");
+        OrderResponse response = new OrderResponse(
+                "ord_" + orderId,
+                1000L,
+                OrderCurrency.EUR,
+                OrderStatus.CANCELLED,
+                cancelledAt,
+                CREATED_AT,
+                UPDATED_AT);
+        authenticate(merchant);
+        when(orderService.cancelOrder(merchant, orderId)).thenReturn(response);
+
+        mockMvc.perform(post("/api/v1/orders/ord_" + orderId + "/cancel")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.cancelledAt").value(cancelledAt.toString()));
+
+        verify(orderService).cancelOrder(merchant, orderId);
+    }
+
+    @Test
+    void cancelInvalidStateReturnsOrderInvalidState() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID orderId = UUID.randomUUID();
+        authenticate(merchant);
+        when(orderService.cancelOrder(merchant, orderId))
+                .thenThrow(new OrderInvalidStateException(
+                        "Order cancellation is not allowed."));
+
+        mockMvc.perform(post("/api/v1/orders/ord_" + orderId + "/cancel")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ORDER_INVALID_STATE"))
+                .andExpect(jsonPath("$.message").value(
+                        "Order cancellation is not allowed."));
+    }
+
+    @Test
+    void cancelCrossMerchantOrderReturnsOrderNotFound() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID orderId = UUID.randomUUID();
+        authenticate(merchant);
+        when(orderService.cancelOrder(merchant, orderId))
+                .thenThrow(new OrderNotFoundException());
+
+        mockMvc.perform(post("/api/v1/orders/ord_" + orderId + "/cancel")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("ORDER_NOT_FOUND"));
     }
 
     private void authenticate(Merchant merchant) {
