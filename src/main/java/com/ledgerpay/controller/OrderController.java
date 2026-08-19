@@ -6,6 +6,7 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.ledgerpay.dto.CreateOrderRequest;
 import com.ledgerpay.dto.OrderResponse;
+import com.ledgerpay.dto.UpdateOrderRequest;
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.exception.InvalidOrderIdException;
 import com.ledgerpay.service.OrderService;
@@ -52,6 +54,24 @@ public class OrderController {
             @AuthenticationPrincipal Merchant authenticatedMerchant,
             @PathVariable String orderId) {
         return orderService.getOrder(authenticatedMerchant, parseOrderId(orderId));
+    }
+
+    @PatchMapping("/orders/{orderId}")
+    public OrderResponse updateOrder(
+            @AuthenticationPrincipal Merchant authenticatedMerchant,
+            @PathVariable String orderId,
+            @Valid @RequestBody UpdateOrderRequest request) {
+        return orderService.updateOrder(
+                authenticatedMerchant,
+                parseOrderId(orderId),
+                request);
+    }
+
+    @PostMapping("/orders/{orderId}/cancel")
+    public OrderResponse cancelOrder(
+            @AuthenticationPrincipal Merchant authenticatedMerchant,
+            @PathVariable String orderId) {
+        return orderService.cancelOrder(authenticatedMerchant, parseOrderId(orderId));
     }
 
     private UUID parseOrderId(String orderId) {

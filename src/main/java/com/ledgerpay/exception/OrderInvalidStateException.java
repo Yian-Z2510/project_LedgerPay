@@ -7,4 +7,8 @@ public class OrderInvalidStateException extends RuntimeException {
     public OrderInvalidStateException() {
         super(MESSAGE);
     }
+
+    public OrderInvalidStateException(String message) {
+        super(message);
+    }
 }

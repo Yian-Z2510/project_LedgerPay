@@ -154,7 +154,7 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ApiErrorResponse(
                         ORDER_INVALID_STATE,
-                        "Order cannot accept a Payment in its current state."));
+                        exception.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)

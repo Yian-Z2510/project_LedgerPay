@@ -8,6 +8,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -15,12 +17,16 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import com.ledgerpay.dto.CreateOrderRequest;
 import com.ledgerpay.dto.OrderResponse;
+import com.ledgerpay.dto.UpdateOrderRequest;
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.MerchantOrder;
 import com.ledgerpay.entity.OrderCurrency;
 import com.ledgerpay.entity.OrderStatus;
+import com.ledgerpay.entity.PaymentStatus;
+import com.ledgerpay.exception.OrderInvalidStateException;
 import com.ledgerpay.exception.OrderNotFoundException;
 import com.ledgerpay.repository.OrderRepository;
+import com.ledgerpay.repository.PaymentRepository;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -29,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -41,11 +48,14 @@ class OrderServiceTest {
     @Mock
     private OrderRepository orderRepository;
 
+    @Mock
+    private PaymentRepository paymentRepository;
+
     private OrderService orderService;
 
     @BeforeEach
     void setUp() {
-        orderService = new OrderService(orderRepository);
+        orderService = new OrderService(orderRepository, paymentRepository);
     }
 
     @Test
@@ -157,6 +167,196 @@ class OrderServiceTest {
 
         assertTrue(responses.isEmpty());
         verify(orderRepository).findByMerchantIdOrderByCreatedAtDesc(authenticatedMerchant.getId());
+    }
+
+    @Test
+    void updateOrderChangesAmountAfterLockWhenCreatedAndNoPaymentEverExisted() {
+        Merchant merchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(merchant, UUID.randomUUID(), 1000L, CREATED_AT);
+        when(orderRepository.findForUpdateByIdAndMerchantId(order.getId(), merchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(paymentRepository.existsByOrderId(order.getId())).thenReturn(false);
+        when(orderRepository.saveAndFlush(order)).thenReturn(order);
+
+        OrderResponse response = orderService.updateOrder(
+                merchant,
+                order.getId(),
+                new UpdateOrderRequest(1200L));
+
+        assertEquals(1200L, order.getAmount());
+        assertEquals(1200L, response.amount());
+        verify(orderRepository).findForUpdateByIdAndMerchantId(order.getId(), merchant.getId());
+        verify(paymentRepository).existsByOrderId(order.getId());
+        verify(orderRepository).saveAndFlush(order);
+    }
+
+    @Test
+    void updateOrderRejectsNonCreatedOrderAfterLock() {
+        Merchant merchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(merchant, UUID.randomUUID(), 1000L, CREATED_AT);
+        order.setStatus(OrderStatus.PAYMENT_PENDING);
+        when(orderRepository.findForUpdateByIdAndMerchantId(order.getId(), merchant.getId()))
+                .thenReturn(Optional.of(order));
+
+        OrderInvalidStateException exception = assertThrows(
+                OrderInvalidStateException.class,
+                () -> orderService.updateOrder(
+                        merchant,
+                        order.getId(),
+                        new UpdateOrderRequest(1200L)));
+
+        assertEquals("Order is not editable.", exception.getMessage());
+        verify(paymentRepository, never()).existsByOrderId(any());
+        verify(orderRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updateOrderRejectsHistoricalFailedPayment() {
+        Merchant merchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(merchant, UUID.randomUUID(), 1000L, CREATED_AT);
+        when(orderRepository.findForUpdateByIdAndMerchantId(order.getId(), merchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(paymentRepository.existsByOrderId(order.getId())).thenReturn(true);
+
+        assertThrows(
+                OrderInvalidStateException.class,
+                () -> orderService.updateOrder(
+                        merchant,
+                        order.getId(),
+                        new UpdateOrderRequest(1200L)));
+
+        assertEquals(1000L, order.getAmount());
+        verify(orderRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updateOrderRejectsPendingPayment() {
+        Merchant merchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(merchant, UUID.randomUUID(), 1000L, CREATED_AT);
+        when(orderRepository.findForUpdateByIdAndMerchantId(order.getId(), merchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(paymentRepository.existsByOrderId(order.getId())).thenReturn(true);
+
+        assertThrows(
+                OrderInvalidStateException.class,
+                () -> orderService.updateOrder(
+                        merchant,
+                        order.getId(),
+                        new UpdateOrderRequest(1200L)));
+
+        verify(paymentRepository).existsByOrderId(order.getId());
+        verify(orderRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void updateOrderTreatsCrossMerchantOrderAsNotFound() {
+        Merchant merchant = persistedMerchant();
+        UUID orderId = UUID.randomUUID();
+        when(orderRepository.findForUpdateByIdAndMerchantId(orderId, merchant.getId()))
+                .thenReturn(Optional.empty());
+
+        assertThrows(
+                OrderNotFoundException.class,
+                () -> orderService.updateOrder(
+                        merchant,
+                        orderId,
+                        new UpdateOrderRequest(1200L)));
+
+        verify(paymentRepository, never()).existsByOrderId(any());
+        verify(orderRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void cancelCreatedOrderSetsCancelledStatusAndTimestamp() {
+        Merchant merchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(merchant, UUID.randomUUID(), 1000L, CREATED_AT);
+        when(orderRepository.findForUpdateByIdAndMerchantId(order.getId(), merchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(orderRepository.saveAndFlush(order)).thenReturn(order);
+        Instant beforeCancellation = Instant.now();
+
+        OrderResponse response = orderService.cancelOrder(merchant, order.getId());
+
+        assertEquals(OrderStatus.CANCELLED, order.getStatus());
+        assertNotNull(order.getCancelledAt());
+        assertTrue(!order.getCancelledAt().isBefore(beforeCancellation));
+        assertEquals(OrderStatus.CANCELLED, response.status());
+        assertEquals(order.getCancelledAt(), response.cancelledAt());
+        verify(paymentRepository, never()).existsByOrderIdAndStatus(any(), any());
+        verify(orderRepository).saveAndFlush(order);
+    }
+
+    @Test
+    void cancelPaymentPendingOrderWithOnlyHistoricalFailedPayments() {
+        Merchant merchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(merchant, UUID.randomUUID(), 1000L, CREATED_AT);
+        order.setStatus(OrderStatus.PAYMENT_PENDING);
+        when(orderRepository.findForUpdateByIdAndMerchantId(order.getId(), merchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(paymentRepository.existsByOrderIdAndStatus(order.getId(), PaymentStatus.PENDING))
+                .thenReturn(false);
+        when(orderRepository.saveAndFlush(order)).thenReturn(order);
+
+        OrderResponse response = orderService.cancelOrder(merchant, order.getId());
+
+        assertEquals(OrderStatus.CANCELLED, response.status());
+        assertNotNull(response.cancelledAt());
+        verify(paymentRepository).existsByOrderIdAndStatus(
+                order.getId(), PaymentStatus.PENDING);
+    }
+
+    @Test
+    void cancelPaymentPendingOrderRejectsCurrentPendingPayment() {
+        Merchant merchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(merchant, UUID.randomUUID(), 1000L, CREATED_AT);
+        order.setStatus(OrderStatus.PAYMENT_PENDING);
+        when(orderRepository.findForUpdateByIdAndMerchantId(order.getId(), merchant.getId()))
+                .thenReturn(Optional.of(order));
+        when(paymentRepository.existsByOrderIdAndStatus(order.getId(), PaymentStatus.PENDING))
+                .thenReturn(true);
+
+        assertThrows(
+                OrderInvalidStateException.class,
+                () -> orderService.cancelOrder(merchant, order.getId()));
+
+        assertEquals(OrderStatus.PAYMENT_PENDING, order.getStatus());
+        assertNull(order.getCancelledAt());
+        verify(orderRepository, never()).saveAndFlush(any());
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = OrderStatus.class,
+            names = {"PAID", "PARTIALLY_REFUNDED", "REFUNDED", "CANCELLED"})
+    void cancelRejectsTerminalOrderStatuses(OrderStatus status) {
+        Merchant merchant = persistedMerchant();
+        MerchantOrder order = persistedOrder(merchant, UUID.randomUUID(), 1000L, CREATED_AT);
+        order.setStatus(status);
+        when(orderRepository.findForUpdateByIdAndMerchantId(order.getId(), merchant.getId()))
+                .thenReturn(Optional.of(order));
+
+        OrderInvalidStateException exception = assertThrows(
+                OrderInvalidStateException.class,
+                () -> orderService.cancelOrder(merchant, order.getId()));
+
+        assertEquals("Order cancellation is not allowed.", exception.getMessage());
+        verify(paymentRepository, never()).existsByOrderIdAndStatus(any(), any());
+        verify(orderRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void cancelTreatsCrossMerchantOrderAsNotFound() {
+        Merchant merchant = persistedMerchant();
+        UUID orderId = UUID.randomUUID();
+        when(orderRepository.findForUpdateByIdAndMerchantId(orderId, merchant.getId()))
+                .thenReturn(Optional.empty());
+
+        assertThrows(
+                OrderNotFoundException.class,
+                () -> orderService.cancelOrder(merchant, orderId));
+
+        verify(paymentRepository, never()).existsByOrderIdAndStatus(any(), any());
+        verify(orderRepository, never()).saveAndFlush(any());
     }
 
     private Merchant persistedMerchant() {
