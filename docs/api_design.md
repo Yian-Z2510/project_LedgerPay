@@ -839,12 +839,13 @@ Returns the complete Order.
 PATCH /api/v1/orders/{orderId}
 ```
 
-### Implementation sequencing
+### Transaction and concurrency
 
-This endpoint remains part of the formal v1 API design. Its implementation is
-intentionally deferred until Payment persistence and repository support exist,
-because eligibility requires proving that no Payment has ever been created for
-the Order. The final implementation must enforce both preconditions below.
+The update runs in one database transaction and acquires a pessimistic write lock
+on the merchant-owned Order row. Status and historical-Payment eligibility are
+checked after the lock is acquired. Payment creation uses the same Order-row lock,
+so a Payment cannot be created from one amount while a concurrent update commits
+another amount.
 
 ### Authentication
 
@@ -893,14 +894,12 @@ Returns the complete updated Order.
 POST /api/v1/orders/{orderId}/cancel
 ```
 
-### Implementation sequencing
+### Transaction and concurrency
 
-This endpoint remains part of the formal v1 API design. Its implementation is
-intentionally deferred until Payment persistence and repository support exist.
-Cancellation from `PAYMENT_PENDING` requires checking whether a current
-`PENDING` Payment exists, and the final implementation must consider concurrency
-with Payment creation. The locking approach will be decided with the Payment
-implementation.
+Cancellation runs in one database transaction and acquires the same pessimistic
+write lock on the merchant-owned Order row that Payment creation uses. Order status
+and the current-`PENDING`-Payment check are evaluated after the lock is acquired,
+so cancellation and Payment creation cannot both pass eligibility concurrently.
 
 ### Authentication
 

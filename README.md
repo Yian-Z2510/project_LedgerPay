@@ -14,26 +14,30 @@ The following functionality is currently implemented:
 - `GET /health` application-level liveness endpoint
 - Merchant registration, retrieval, webhook URL update, and API-key rotation endpoints
 - Merchant API-key authentication, with only API-key hashes stored in PostgreSQL
-- Validation and consistent API error responses for the Merchant module
-- Focused unit, MVC, persistence, security, and integration tests
+- Merchant-scoped Order creation, retrieval, listing, amount update, and cancellation
+- Merchant-scoped Payment creation, retrieval, Order history, and manual simulation
+- Payment idempotency with current-representation replay and PostgreSQL race protection
+- Order-row pessimistic locking across Payment creation and Order mutations
+- Durable `PAYMENT_SUCCEEDED` and `PAYMENT_FAILED` WebhookEvent persistence
+- Validation and consistent API error responses across the implemented modules
+- Focused unit, MVC, persistence, security, integration, concurrency, and lifecycle tests
 
-Merchant deactivation is intentionally deferred until the required Payment, Refund,
-and WebhookEvent pending-state checks can be implemented.
+Merchant deactivation is intentionally deferred until Refund persistence and the
+complete cross-module unfinished-operation checks can be implemented.
 
 ## Remaining Planned V1 Scope
 
-The remaining planned v1 design includes:
+The remaining planned v1 implementation includes:
 
-- Merchant-scoped resource isolation
-- Order lifecycle management
-- Payment creation and manual payment simulation
 - Refund creation and manual refund simulation
-- Payment and Refund idempotency
-- PostgreSQL transaction and locking rules
-- Webhook event persistence, delivery, and retry
-- Validation and consistent error responses for the remaining modules
+- Refund idempotency and concurrency control
+- Webhook HTTP delivery and retry processing
+- Merchant deactivation with complete unfinished-operation checks
+- Validation and consistent error responses for the remaining Refund and delivery APIs
 
-These remaining capabilities are planned and are not yet implemented.
+These remaining capabilities are planned and are not yet implemented. WebhookEvent
+records are already created durably with Payment terminal transitions; only their
+HTTP delivery and retry processing remain deferred.
 
 ## Tech Stack
 
@@ -170,6 +174,15 @@ direnv exec . ./mvnw test
 | GET | `/api/v1/merchant` | Get the authenticated Merchant | `MerchantResponse` |
 | PATCH | `/api/v1/merchant` | Update the authenticated Merchant webhook URL | `MerchantResponse` |
 | POST | `/api/v1/merchant/api-key/rotate` | Rotate the authenticated Merchant API key | `RotateApiKeyResponse` |
+| POST | `/api/v1/orders` | Create an Order | `OrderResponse` |
+| GET | `/api/v1/orders` | List the authenticated Merchant's Orders | `OrderResponse[]` |
+| GET | `/api/v1/orders/{orderId}` | Get an owned Order | `OrderResponse` |
+| PATCH | `/api/v1/orders/{orderId}` | Update an eligible Order amount | `OrderResponse` |
+| POST | `/api/v1/orders/{orderId}/cancel` | Cancel an eligible Order | `OrderResponse` |
+| POST | `/api/v1/payments` | Create or replay a Payment | `PaymentResponse` |
+| GET | `/api/v1/payments/{paymentId}` | Get an owned Payment | `PaymentResponse` |
+| GET | `/api/v1/orders/{orderId}/payments` | List Payment attempts newest first | `PaymentResponse[]` |
+| POST | `/api/v1/payments/{paymentId}/simulate` | Simulate a terminal Payment outcome | `PaymentResponse` |
 
 ## Project Structure
 
@@ -177,16 +190,25 @@ direnv exec . ./mvnw test
 src/
 ├── main/
 │   ├── java/com/ledgerpay/
-│   │   ├── LedgerPayApplication.java
-│   │   └── controller/
-│   │       └── HealthController.java
+│   │   ├── controller/
+│   │   ├── dto/
+│   │   ├── entity/
+│   │   ├── exception/
+│   │   ├── repository/
+│   │   ├── security/
+│   │   ├── service/
+│   │   └── validation/
 │   └── resources/
-│       └── application.properties
+│       ├── application.properties
+│       └── db/migration/
 └── test/
     └── java/com/ledgerpay/
-        ├── LedgerPayApplicationTests.java
-        └── controller/
-            └── HealthControllerTest.java
+        ├── controller/
+        ├── dto/
+        ├── exception/
+        ├── repository/
+        ├── security/
+        └── service/
 ```
 
 Other repository entries include:
