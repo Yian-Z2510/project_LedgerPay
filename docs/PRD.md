@@ -51,11 +51,11 @@ Developers checking that the system behaved correctly. They need to:
 | Assumption      | Detail                                                                                     |
 | --------------- | ------------------------------------------------------------------------------------------ |
 | Sandbox only    | No real banks, cards, or money movement                                                    |
-| Single merchant | One implicit merchant; no multi-tenant model in MVP                                        |
+| Merchant model  | Authenticated multi-Merchant system; business resources are scoped to their owning Merchant |
 | Amounts         | Whole numbers in **minor units** (e.g. euro cents). `€10.00` = `1000`                      |
 | Currency        | `EUR` only; no currency exchange or conversion                                             |
-| Idempotency     | Client sends an **idempotency key** when creating payments and refunds so retries are safe |
-| No login        | No user authentication in MVP; documented as local/dev use only                            |
+| Idempotency     | Client keys are scoped by Merchant so retries are safe without cross-Merchant conflicts   |
+| Authentication  | Merchants authenticate with API keys; end-user accounts and login are not included         |
 | Payment method  | Optional label (e.g. `card`); not validated against real cards                             |
 
 

@@ -384,7 +384,9 @@ UNIQUE (id, merchant_id)
 
 ### Payment idempotency
 
-The merchant generates and submits `idempotency_key` when creating a Payment.
+The merchant generates and submits `idempotency_key` when creating a Payment. The
+idempotency namespace is scoped to the authenticated Merchant, and the v1 request
+identity is `orderId`.
 
 Database constraint:
 
@@ -392,9 +394,17 @@ Database constraint:
 UNIQUE (merchant_id, idempotency_key)
 ```
 
-If the same merchant retries a request with the same key, LedgerPay returns the existing Payment rather than creating another record.
+For the same Merchant, reusing a key with the same `orderId` returns the current
+representation of the historical Payment. Reusing it with a different `orderId`
+returns `IDEMPOTENCY_CONFLICT`. Different Merchants may use the same key.
 
-Different merchants may use the same key.
+Historical lookup happens before mutable Order eligibility validation. For the write
+path, LedgerPay locks the requested Order and performs a second idempotency lookup
+before validating eligibility. This pessimistic lock serializes writes to the same
+Order. The unique `(merchant_id, idempotency_key)` constraint remains the final
+protection when concurrent requests for different Orders reuse a key. A unique-race
+loser reloads and compares the winning Payment only after its failed write transaction
+has fully rolled back; if no winner exists, the original integrity error is rethrown.
 
 ### Payment amount and currency rules
 
@@ -884,14 +894,15 @@ Before creating a Payment:
 
 1. authenticate the merchant from its API key;
 2. confirm that the Merchant is `ACTIVE`;
-3. load the MerchantOrder;
-4. confirm that the order belongs to the authenticated merchant;
-5. confirm that the order is not already paid, refunded, or cancelled;
-6. confirm there is no current `PENDING` Payment;
-7. validate that Payment amount and currency match the order;
-8. apply merchant-scoped idempotency;
-9. create the Payment as `PENDING`;
-10. update the order to `PAYMENT_PENDING`.
+3. perform the merchant-scoped historical idempotency lookup and compare `orderId`;
+4. for a new request, begin the bounded write transaction and lock the MerchantOrder;
+5. perform the second merchant-scoped idempotency lookup;
+6. confirm that the order belongs to the authenticated merchant;
+7. confirm that the order is not already paid, refunded, or cancelled;
+8. confirm there is no current `PENDING` or `SUCCEEDED` Payment;
+9. validate that Payment amount and currency match the order;
+10. create and flush the Payment as `PENDING`;
+11. update the order to `PAYMENT_PENDING` and commit.
 
 ### 5.2 Completing a Payment
 
