@@ -3,8 +3,10 @@ package com.ledgerpay.service;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.ledgerpay.dto.CreateRefundRequest;
 import com.ledgerpay.entity.Merchant;
@@ -24,12 +26,15 @@ public class RefundService {
 
     private final PaymentRepository paymentRepository;
     private final RefundRepository refundRepository;
+    private final TransactionTemplate writeTransaction;
 
     public RefundService(
             PaymentRepository paymentRepository,
-            RefundRepository refundRepository) {
+            RefundRepository refundRepository,
+            PlatformTransactionManager transactionManager) {
         this.paymentRepository = paymentRepository;
         this.refundRepository = refundRepository;
+        this.writeTransaction = new TransactionTemplate(transactionManager);
     }
 
     public Refund getRefund(Merchant authenticatedMerchant, UUID refundId) {
@@ -49,7 +54,6 @@ public class RefundService {
         return refundRepository.findByPaymentIdOrderByCreatedAtDesc(paymentId);
     }
 
-    @Transactional
     public RefundCreationResult createRefund(
             Merchant authenticatedMerchant,
             UUID paymentId,
@@ -69,10 +73,38 @@ public class RefundService {
             return replayOrConflict(historicalRefund, paymentId, request);
         }
 
+        try {
+            return writeTransaction.execute(status -> createRefundInWriteTransaction(
+                    authenticatedMerchant,
+                    paymentId,
+                    request,
+                    idempotencyKey));
+        } catch (DataIntegrityViolationException exception) {
+            Refund winningRefund = refundRepository.findByMerchantIdAndIdempotencyKey(
+                            authenticatedMerchant.getId(),
+                            idempotencyKey)
+                    .orElseThrow(() -> exception);
+            return replayOrConflict(winningRefund, paymentId, request);
+        }
+    }
+
+    private RefundCreationResult createRefundInWriteTransaction(
+            Merchant authenticatedMerchant,
+            UUID paymentId,
+            CreateRefundRequest request,
+            String idempotencyKey) {
         Payment lockedPayment = paymentRepository.findForUpdateByIdAndMerchantId(
                         paymentId,
                         authenticatedMerchant.getId())
                 .orElseThrow(PaymentNotFoundException::new);
+
+        Refund historicalRefund = refundRepository.findByMerchantIdAndIdempotencyKey(
+                        authenticatedMerchant.getId(),
+                        idempotencyKey)
+                .orElse(null);
+        if (historicalRefund != null) {
+            return replayOrConflict(historicalRefund, paymentId, request);
+        }
 
         if (lockedPayment.getStatus() != PaymentStatus.SUCCEEDED) {
             throw new PaymentNotRefundableException();
