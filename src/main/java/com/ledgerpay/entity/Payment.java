@@ -118,6 +118,15 @@ public class Payment {
         this.completedAt = completedAt;
     }
 
+    public void reserveRefundAmount(Long refundAmount) {
+        if (refundAmount == null || refundAmount <= 0) {
+            throw new IllegalArgumentException(
+                    "Reserved Refund amount must be greater than zero.");
+        }
+
+        this.pendingRefundAmount += refundAmount;
+    }
+
     private void requirePendingStatus() {
         if (status != PaymentStatus.PENDING) {
             throw new IllegalStateException("Only a pending Payment may transition.");
