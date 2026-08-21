@@ -25,9 +25,13 @@ public class GlobalExceptionHandler {
     private static final String MERCHANT_EMAIL_ALREADY_EXISTS = "MERCHANT_EMAIL_ALREADY_EXISTS";
     private static final String ORDER_NOT_FOUND = "ORDER_NOT_FOUND";
     private static final String PAYMENT_NOT_FOUND = "PAYMENT_NOT_FOUND";
+    private static final String REFUND_NOT_FOUND = "REFUND_NOT_FOUND";
     private static final String PAYMENT_ALREADY_PENDING = "PAYMENT_ALREADY_PENDING";
     private static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
     private static final String PAYMENT_INVALID_STATE = "PAYMENT_INVALID_STATE";
+    private static final String PAYMENT_NOT_REFUNDABLE = "PAYMENT_NOT_REFUNDABLE";
+    private static final String INSUFFICIENT_REFUNDABLE_AMOUNT =
+            "INSUFFICIENT_REFUNDABLE_AMOUNT";
     private static final String ORDER_ALREADY_PAID = "ORDER_ALREADY_PAID";
     private static final String ORDER_INVALID_STATE = "ORDER_INVALID_STATE";
     private static final String INTERNAL_ERROR = "INTERNAL_ERROR";
@@ -94,6 +98,15 @@ public class GlobalExceptionHandler {
                         "Invalid payment ID."));
     }
 
+    @ExceptionHandler(InvalidRefundIdException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidRefundId(
+            InvalidRefundIdException exception) {
+        return ResponseEntity.badRequest()
+                .body(new ApiErrorResponse(
+                        VALIDATION_ERROR,
+                        "Invalid refund ID."));
+    }
+
     @ExceptionHandler(InvalidIdempotencyKeyException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidIdempotencyKey(
             InvalidIdempotencyKeyException exception) {
@@ -110,6 +123,15 @@ public class GlobalExceptionHandler {
                 .body(new ApiErrorResponse(
                         PAYMENT_NOT_FOUND,
                         "Payment was not found."));
+    }
+
+    @ExceptionHandler(RefundNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleRefundNotFound(
+            RefundNotFoundException exception) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse(
+                        REFUND_NOT_FOUND,
+                        exception.getMessage()));
     }
 
     @ExceptionHandler(PaymentAlreadyPendingException.class)
@@ -137,6 +159,24 @@ public class GlobalExceptionHandler {
                 .body(new ApiErrorResponse(
                         PAYMENT_INVALID_STATE,
                         "Payment is no longer pending."));
+    }
+
+    @ExceptionHandler(PaymentNotRefundableException.class)
+    public ResponseEntity<ApiErrorResponse> handlePaymentNotRefundable(
+            PaymentNotRefundableException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(
+                        PAYMENT_NOT_REFUNDABLE,
+                        exception.getMessage()));
+    }
+
+    @ExceptionHandler(InsufficientRefundableAmountException.class)
+    public ResponseEntity<ApiErrorResponse> handleInsufficientRefundableAmount(
+            InsufficientRefundableAmountException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(
+                        INSUFFICIENT_REFUNDABLE_AMOUNT,
+                        exception.getMessage()));
     }
 
     @ExceptionHandler(OrderAlreadyPaidException.class)
