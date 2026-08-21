@@ -108,6 +108,33 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void refundNotFoundReturnsNotFoundContract() throws Exception {
+        mockMvc.perform(get("/test/refund-not-found"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string(
+                        "{\"code\":\"REFUND_NOT_FOUND\","
+                                + "\"message\":\"Refund was not found.\"}"));
+    }
+
+    @Test
+    void paymentNotRefundableReturnsConflictContract() throws Exception {
+        mockMvc.perform(get("/test/payment-not-refundable"))
+                .andExpect(status().isConflict())
+                .andExpect(content().string(
+                        "{\"code\":\"PAYMENT_NOT_REFUNDABLE\","
+                                + "\"message\":\"Payment has not succeeded and cannot be refunded.\"}"));
+    }
+
+    @Test
+    void insufficientRefundableAmountReturnsConflictContract() throws Exception {
+        mockMvc.perform(get("/test/insufficient-refundable-amount"))
+                .andExpect(status().isConflict())
+                .andExpect(content().string(
+                        "{\"code\":\"INSUFFICIENT_REFUNDABLE_AMOUNT\","
+                                + "\"message\":\"The requested refund amount exceeds the available refundable amount.\"}"));
+    }
+
+    @Test
     void unexpectedExceptionReturnsGenericResponseWithoutInternalDetails() throws Exception {
         mockMvc.perform(get("/test/unexpected"))
                 .andExpect(status().isInternalServerError())
@@ -147,6 +174,21 @@ class GlobalExceptionHandlerTest {
         @GetMapping("/test/order-not-found")
         void orderNotFound() {
             throw new OrderNotFoundException();
+        }
+
+        @GetMapping("/test/refund-not-found")
+        void refundNotFound() {
+            throw new RefundNotFoundException();
+        }
+
+        @GetMapping("/test/payment-not-refundable")
+        void paymentNotRefundable() {
+            throw new PaymentNotRefundableException();
+        }
+
+        @GetMapping("/test/insufficient-refundable-amount")
+        void insufficientRefundableAmount() {
+            throw new InsufficientRefundableAmountException();
         }
 
         @GetMapping("/test/unexpected")
