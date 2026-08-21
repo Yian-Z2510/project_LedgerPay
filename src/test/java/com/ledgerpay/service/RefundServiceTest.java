@@ -11,8 +11,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.util.ReflectionTestUtils;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
 
 import com.ledgerpay.dto.CreateRefundRequest;
 import com.ledgerpay.entity.Merchant;
@@ -33,7 +36,6 @@ import com.ledgerpay.repository.RefundRepository;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -58,11 +60,20 @@ class RefundServiceTest {
     @Mock
     private RefundRepository refundRepository;
 
+    @Mock
+    private PlatformTransactionManager transactionManager;
+
+    @Mock
+    private TransactionStatus transactionStatus;
+
     private RefundService refundService;
 
     @BeforeEach
     void setUp() {
-        refundService = new RefundService(paymentRepository, refundRepository);
+        refundService = new RefundService(
+                paymentRepository,
+                refundRepository,
+                transactionManager);
     }
 
     @Test
@@ -185,8 +196,42 @@ class RefundServiceTest {
                 merchant.getId(), IDEMPOTENCY_KEY);
         inOrder.verify(paymentRepository).findForUpdateByIdAndMerchantId(
                 payment.getId(), merchant.getId());
+        inOrder.verify(refundRepository).findByMerchantIdAndIdempotencyKey(
+                merchant.getId(), IDEMPOTENCY_KEY);
         inOrder.verify(refundRepository).saveAndFlush(any(Refund.class));
         inOrder.verify(paymentRepository).saveAndFlush(payment);
+    }
+
+    @Test
+    void secondLookupReplaysBeforeCapacityValidationAfterPaymentLock() {
+        Merchant merchant = persistedMerchant("second-lookup-replay@example.com");
+        Payment payment = succeededPayment(merchant, 1000L);
+        Refund winningRefund = persistedRefund(new Refund(
+                payment,
+                REQUEST.amount(),
+                REQUEST.reasonCode(),
+                IDEMPOTENCY_KEY));
+        ReflectionTestUtils.setField(payment, "status", PaymentStatus.FAILED);
+        ReflectionTestUtils.setField(payment, "pendingRefundAmount", 1000L);
+        when(paymentRepository.existsByIdAndMerchantId(payment.getId(), merchant.getId()))
+                .thenReturn(true);
+        when(paymentRepository.findForUpdateByIdAndMerchantId(
+                        payment.getId(), merchant.getId()))
+                .thenReturn(Optional.of(payment));
+        when(refundRepository.findByMerchantIdAndIdempotencyKey(
+                        merchant.getId(), IDEMPOTENCY_KEY))
+                .thenReturn(Optional.empty(), Optional.of(winningRefund));
+
+        RefundCreationResult result = refundService.createRefund(
+                merchant,
+                payment.getId(),
+                REQUEST,
+                IDEMPOTENCY_KEY);
+
+        assertTrue(result.replayed());
+        assertSame(winningRefund, result.refund());
+        verify(refundRepository, never()).saveAndFlush(any(Refund.class));
+        verify(paymentRepository, never()).saveAndFlush(any(Payment.class));
     }
 
     @Test
@@ -318,15 +363,58 @@ class RefundServiceTest {
     }
 
     @Test
-    void createRefundOwnsTransactionalBoundary() throws Exception {
-        assertNotNull(RefundService.class
-                .getMethod(
-                        "createRefund",
-                        Merchant.class,
-                        UUID.class,
-                        CreateRefundRequest.class,
-                        String.class)
-                .getAnnotation(Transactional.class));
+    void createRefundUsesBoundedWriteTransaction() {
+        Merchant merchant = persistedMerchant("bounded-transaction@example.com");
+        Payment payment = succeededPayment(merchant, 1000L);
+        stubNewRequest(merchant, payment);
+        when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+                .thenReturn(transactionStatus);
+        when(refundRepository.saveAndFlush(any(Refund.class)))
+                .thenAnswer(invocation -> persistedRefund(invocation.getArgument(0)));
+
+        refundService.createRefund(
+                merchant,
+                payment.getId(),
+                REQUEST,
+                IDEMPOTENCY_KEY);
+
+        verify(transactionManager).getTransaction(any(TransactionDefinition.class));
+        verify(transactionManager).commit(any(TransactionStatus.class));
+    }
+
+    @Test
+    void createRefundRethrowsIntegrityViolationWhenNoWinnerExistsAfterRollback() {
+        Merchant merchant = persistedMerchant("unexpected-integrity@example.com");
+        Payment payment = succeededPayment(merchant, 1000L);
+        DataIntegrityViolationException integrityException =
+                new DataIntegrityViolationException("unrelated database constraint");
+        when(paymentRepository.existsByIdAndMerchantId(payment.getId(), merchant.getId()))
+                .thenReturn(true);
+        when(refundRepository.findByMerchantIdAndIdempotencyKey(
+                        merchant.getId(), IDEMPOTENCY_KEY))
+                .thenReturn(Optional.empty());
+        when(paymentRepository.findForUpdateByIdAndMerchantId(
+                        payment.getId(), merchant.getId()))
+                .thenReturn(Optional.of(payment));
+        when(transactionManager.getTransaction(any(TransactionDefinition.class)))
+                .thenReturn(transactionStatus);
+        when(refundRepository.saveAndFlush(any(Refund.class)))
+                .thenThrow(integrityException);
+
+        DataIntegrityViolationException thrown = assertThrows(
+                DataIntegrityViolationException.class,
+                () -> refundService.createRefund(
+                        merchant,
+                        payment.getId(),
+                        REQUEST,
+                        IDEMPOTENCY_KEY));
+
+        assertSame(integrityException, thrown);
+        InOrder inOrder = inOrder(transactionManager, refundRepository);
+        inOrder.verify(transactionManager).rollback(transactionStatus);
+        inOrder.verify(refundRepository).findByMerchantIdAndIdempotencyKey(
+                merchant.getId(), IDEMPOTENCY_KEY);
+        verify(transactionManager, never()).commit(any(TransactionStatus.class));
     }
 
     private void assertPaymentNotRefundable(Payment payment) {
