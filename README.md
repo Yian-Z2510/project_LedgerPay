@@ -19,25 +19,23 @@ The following functionality is currently implemented:
 - Payment idempotency with current-representation replay and PostgreSQL race protection
 - Order-row pessimistic locking across Payment creation and Order mutations
 - Durable `PAYMENT_SUCCEEDED` and `PAYMENT_FAILED` WebhookEvent persistence
+- Refund persistence, merchant-scoped create/query/history APIs, and historical idempotency replay
+- Refund `PENDING` capacity reservation and Payment-row concurrency protection during creation
+- Manual Refund simulation to `SUCCEEDED` or `FAILED`, with Payment refund accounting and Order `PARTIALLY_REFUNDED` / `REFUNDED` transitions
+- Durable `REFUND_SUCCEEDED` and `REFUND_FAILED` WebhookEvent persistence
+- Merchant soft-deactivation with unfinished Payment, Refund, and WebhookEvent checks
 - Validation and consistent API error responses across the implemented modules
 - Focused unit, MVC, persistence, security, integration, concurrency, and lifecycle tests
-
-Merchant deactivation is intentionally deferred until Refund persistence and the
-complete cross-module unfinished-operation checks can be implemented.
 
 ## Remaining Planned V1 Scope
 
 The remaining planned v1 implementation includes:
 
-- Refund creation and manual refund simulation
-- Refund idempotency and concurrency control
 - Webhook HTTP delivery and retry processing
-- Merchant deactivation with complete unfinished-operation checks
-- Validation and consistent error responses for the remaining Refund and delivery APIs
+- Validation and consistent error responses for the remaining delivery APIs
 
-These remaining capabilities are planned and are not yet implemented. WebhookEvent
-records are already created durably with Payment terminal transitions; only their
-HTTP delivery and retry processing remain deferred.
+WebhookEvent records are already created durably with Payment and Refund terminal
+transitions; only their external HTTP delivery and retry processing remain deferred.
 
 ## Tech Stack
 
@@ -174,6 +172,7 @@ direnv exec . ./mvnw test
 | GET | `/api/v1/merchant` | Get the authenticated Merchant | `MerchantResponse` |
 | PATCH | `/api/v1/merchant` | Update the authenticated Merchant webhook URL | `MerchantResponse` |
 | POST | `/api/v1/merchant/api-key/rotate` | Rotate the authenticated Merchant API key | `RotateApiKeyResponse` |
+| POST | `/api/v1/merchant/deactivate` | Soft-deactivate an eligible Merchant | `MerchantResponse` |
 | POST | `/api/v1/orders` | Create an Order | `OrderResponse` |
 | GET | `/api/v1/orders` | List the authenticated Merchant's Orders | `OrderResponse[]` |
 | GET | `/api/v1/orders/{orderId}` | Get an owned Order | `OrderResponse` |
@@ -183,6 +182,10 @@ direnv exec . ./mvnw test
 | GET | `/api/v1/payments/{paymentId}` | Get an owned Payment | `PaymentResponse` |
 | GET | `/api/v1/orders/{orderId}/payments` | List Payment attempts newest first | `PaymentResponse[]` |
 | POST | `/api/v1/payments/{paymentId}/simulate` | Simulate a terminal Payment outcome | `PaymentResponse` |
+| POST | `/api/v1/payments/{paymentId}/refunds` | Create or replay a Refund | `RefundResponse` |
+| GET | `/api/v1/refunds/{refundId}` | Get an owned Refund | `RefundResponse` |
+| GET | `/api/v1/payments/{paymentId}/refunds` | List Refund history newest first | `RefundResponse[]` |
+| POST | `/api/v1/refunds/{refundId}/simulate` | Simulate a terminal Refund outcome | `RefundResponse` |
 
 ## Project Structure
 

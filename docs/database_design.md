@@ -204,7 +204,9 @@ ACTIVE -> INACTIVE
 
 LedgerPay does not physically delete merchants or cascade-delete transaction history.
 
-Before deactivation, the Service layer checks that no relevant Payment, Refund, or WebhookEvent remains in an unfinished state. Historical records retain their original statuses.
+Before deactivation, the Service layer checks for a `PENDING` Payment, `PENDING`
+Refund, or `PENDING` WebhookEvent. Any one of these blocks deactivation. Terminal
+and historical records do not block deactivation and retain their original statuses.
 
 ---
 
@@ -526,12 +528,13 @@ OTHER
 ### Refund failure codes
 
 ```text
-PAYMENT_NOT_REFUNDABLE
-INSUFFICIENT_REFUNDABLE_AMOUNT
 REFUND_PROCESSING_ERROR
 ```
 
-Validation failures detected before a Refund is accepted should normally be returned as API errors without creating a Refund record. Therefore, `PAYMENT_NOT_REFUNDABLE` and `INSUFFICIENT_REFUNDABLE_AMOUNT` are expected mainly as request-level error codes unless the invalid condition is discovered after persistence. A persisted failed Refund will most commonly use `REFUND_PROCESSING_ERROR` in v1.
+`REFUND_PROCESSING_ERROR` is the only persisted Refund failure code in v1.
+`PAYMENT_NOT_REFUNDABLE` and `INSUFFICIENT_REFUNDABLE_AMOUNT` are request-level
+errors only: they create no Refund row, no `FAILED` Refund, and no
+`refund.failed` WebhookEvent.
 
 ### Refund constraints
 
@@ -580,6 +583,17 @@ The merchant generates and submits `idempotency_key` when creating a Refund.
 ```text
 UNIQUE (merchant_id, idempotency_key)
 ```
+
+The request identity is:
+
+```text
+paymentId + amount + reasonCode
+```
+
+The same merchant key and identity return the same historical Refund after
+`SUCCEEDED` or `FAILED`, even if Payment capacity or Order state later changes.
+A genuine retry after `FAILED` creates a new Refund and requires a new
+idempotency key.
 
 Idempotency is required even though remaining refundable amount is validated. Amount validation prevents over-refunding, while idempotency prevents one merchant request from being executed twice after network retries.
 
@@ -636,23 +650,9 @@ A `webhook_event` represents one business event that LedgerPay must deliver to a
 
 ### Implementation phase
 
-The schema described in this section is the final v1 target, where a WebhookEvent
-may relate to either a Payment or a Refund.
-
-The current V4 migration intentionally implements only the Day 13 Payment-event
-foundation:
-
-```text
-payment_id NOT NULL
-no refund_id yet
-event types: PAYMENT_SUCCEEDED, PAYMENT_FAILED
-```
-
-Later Refund work will add `refund_id`, make `payment_id` nullable where
-appropriate, and add the Payment-or-Refund relationship rules, Refund event
-types, ownership constraints, and deduplication index described below. V4 is not
-the final WebhookEvent schema and must not be changed retroactively for that
-later work.
+Migration V6 implements WebhookEvent sources for both Payment and Refund,
+including source/type consistency, Refund ownership, and Refund-event
+deduplication constraints.
 
 | Column | PostgreSQL type | Nullable | Default / constraint |
 |---|---|---:|---|
@@ -745,14 +745,12 @@ CHECK (
 )
 ```
 
-The Service layer must also ensure that:
+The Service layer and the V6 PostgreSQL `CHECK` constraint enforce that:
 
 ```text
 PAYMENT_* event types reference payment_id
 REFUND_* event types reference refund_id
 ```
-
-A PostgreSQL `CHECK` constraint may additionally enforce this mapping.
 
 ### Webhook ownership constraints
 
@@ -939,15 +937,15 @@ Refund creation requires a database transaction and a pessimistic write lock on 
 Conceptual flow:
 
 ```text
-BEGIN TRANSACTION
+historical merchant-scoped idempotency lookup
+-> BEGIN bounded write transaction
 -> SELECT Payment FOR UPDATE
--> verify Payment is SUCCEEDED
--> calculate available refundable amount
--> validate Refund amount
--> apply merchant-scoped idempotency
+-> second merchant-scoped idempotency lookup
+-> only for a genuinely new request, verify Payment is SUCCEEDED
+-> calculate and validate available refundable amount
 -> create Refund as PENDING
 -> increase Payment.pending_refund_amount
-COMMIT
+-> COMMIT
 ```
 
 The lock applies only to the relevant Payment row. Refunds for different Payments may proceed concurrently.
@@ -958,8 +956,10 @@ On successful Refund, within one transaction:
 
 ```text
 Refund.status = SUCCEEDED
-Payment.pending_refund_amount -= Refund.amount
-Payment.refunded_amount += Refund.amount
+atomic PostgreSQL UPDATE ... RETURNING:
+    Payment.pending_refund_amount -= Refund.amount
+    Payment.refunded_amount += Refund.amount
+Payment.status remains SUCCEEDED
 ```
 
 Then update the order:
@@ -976,14 +976,24 @@ On failed Refund:
 
 ```text
 Refund.status = FAILED
-Refund.failure_code = fixed failure code
-Payment.pending_refund_amount -= Refund.amount
-Payment.refunded_amount remains unchanged
+Refund.failure_code = REFUND_PROCESSING_ERROR
+atomic PostgreSQL UPDATE ... RETURNING:
+    Payment.pending_refund_amount -= Refund.amount
+    Payment.refunded_amount remains unchanged
+Payment.status remains SUCCEEDED
 ```
+
+The Payment pessimistic write lock protects capacity decisions during Refund
+creation. `UNIQUE (merchant_id, idempotency_key)` protects the idempotency
+namespace. Atomic PostgreSQL `UPDATE ... RETURNING` protects Payment summary
+accounting from lost updates when different Refunds complete concurrently.
+Concurrent simulation of the same Refund is not fully serialized and remains a
+known v1 limitation; Refund simulation is not fully concurrency-safe.
 
 ### 5.5 Creating Webhook events
 
-Webhook creation should be part of the same transaction that commits the related business result where practical.
+For a Refund terminal transition, the Refund status, Payment accounting, Order
+state, and WebhookEvent insert must commit in the same database transaction.
 
 Examples:
 
@@ -1005,6 +1015,8 @@ Refund succeeds
 ```
 
 This prevents the business state from being committed without the corresponding notification event being recorded.
+
+External HTTP webhook delivery occurs outside that database transaction.
 
 ---
 

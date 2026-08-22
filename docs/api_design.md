@@ -676,11 +676,6 @@ The old key becomes invalid immediately after the operation commits. The new pla
 
 ## 5.5 Deactivate Merchant
 
-> **Implementation status:** Intentionally deferred until persistence and
-> repository support exists for Payment, Refund, and WebhookEvent. The endpoint
-> must not be implemented until it can reject deactivation when any corresponding
-> `PENDING` records exist.
-
 ```http
 POST /api/v1/merchant/deactivate
 ```
@@ -700,6 +695,8 @@ Deactivation is rejected while the Merchant has any unfinished:
 - `PENDING` Payment;
 - `PENDING` Refund;
 - `PENDING` WebhookEvent.
+
+Terminal Payment, Refund, and WebhookEvent history does not block deactivation.
 
 ### Success
 
@@ -1258,9 +1255,14 @@ paymentId + amount + reasonCode
 
 Rules:
 
-- same key and identical identity -> historical replay;
+- namespace is the authenticated Merchant plus the idempotency key;
+- same key and identical identity -> the same historical Refund, including after
+  the Refund becomes `SUCCEEDED` or `FAILED`, Payment capacity changes, or the
+  related Order changes state;
 - same key with a different Payment, amount, or reason -> `409 IDEMPOTENCY_CONFLICT`;
 - historical replay is checked before current refund-capacity validation.
+- a genuine business retry after `FAILED` requires a new idempotency key and
+  creates a new Refund.
 
 ### Eligibility
 
@@ -1275,6 +1277,11 @@ Payment.amount
 ```
 
 The requested amount must not exceed this value.
+
+If eligibility or capacity validation fails, the request is rejected without
+creating a Refund row, a `FAILED` Refund, or a `refund.failed` WebhookEvent.
+`PAYMENT_NOT_REFUNDABLE` and `INSUFFICIENT_REFUNDABLE_AMOUNT` are request-level
+errors only.
 
 ### Success: new Refund
 
@@ -1296,14 +1303,15 @@ Returns the existing Refund.
 ### Transaction and concurrency
 
 ```text
-BEGIN
+historical merchant-scoped idempotency lookup
+-> BEGIN bounded write transaction
 -> lock Payment row FOR UPDATE
--> verify Payment is SUCCEEDED
--> recalculate available refundable amount
--> validate requested amount
+-> second merchant-scoped idempotency lookup
+-> for a genuinely new request, verify Payment is SUCCEEDED
+-> recalculate and validate available refundable capacity
 -> insert Refund as PENDING
--> atomically increase Payment.pendingRefundAmount
-COMMIT
+-> increase Payment.pendingRefundAmount
+-> COMMIT
 ```
 
 The Payment lock serializes refund-capacity decisions for the same Payment while allowing Refunds for different Payments to proceed concurrently.
@@ -1413,6 +1421,10 @@ REFUND_PROCESSING_ERROR
 
 Refund eligibility and capacity failures are rejected during Refund creation; they are not simulated after a Refund has been accepted.
 
+The Refund lifecycle is `PENDING -> SUCCEEDED / FAILED`; there is no
+`PROCESSING` state. Repeating simulation for a terminal Refund returns
+`409 REFUND_INVALID_STATE`.
+
 ### Preconditions
 
 Only a `PENDING` Refund may be simulated.
@@ -1437,6 +1449,8 @@ else:
 Insert refund.succeeded WebhookEvent as PENDING
 ```
 
+`Payment.status` remains `SUCCEEDED`.
+
 ### Failed Refund transition
 
 In one database transaction:
@@ -1450,6 +1464,24 @@ Payment.refundedAmount unchanged
 
 Insert refund.failed WebhookEvent as PENDING
 ```
+
+`Payment.status` remains `SUCCEEDED`.
+
+For either terminal result, the persisted Refund webhook snapshot contains:
+
+```text
+id
+paymentId
+amount
+currency
+reasonCode
+status
+failureCode
+```
+
+The Refund transition, Payment accounting, Order state, and WebhookEvent insert
+commit in the same database transaction. External HTTP delivery occurs outside
+that transaction.
 
 Payment summary changes must use atomic database increments and decrements rather than stale Java read-modify-save logic.
 
@@ -1739,6 +1771,9 @@ This means a historical retry can still replay successfully after:
 - a Payment completed;
 - refund capacity changed.
 
+For Refunds, this includes replay after `SUCCEEDED` or `FAILED`; current Payment
+capacity and Order state are not revalidated for a matching historical request.
+
 ### 12.5 First execution and replay
 
 ```text
@@ -1778,7 +1813,10 @@ LedgerPay v1 uses PostgreSQL `READ COMMITTED`.
 
 ### 13.3 Refund creation
 
+- perform the historical merchant-scoped idempotency lookup before the bounded
+  write transaction;
 - lock the related Payment row using `FOR UPDATE`;
+- perform a second idempotency lookup after acquiring the lock;
 - recalculate available capacity inside the transaction;
 - insert Refund and reserve `pendingRefundAmount` atomically.
 
@@ -1842,9 +1880,10 @@ These are accepted sandbox limitations and are recorded in the separate V2 backl
 
 ## 14. Webhook Reliability Model
 
-### 14.1 Simplified transactional outbox
+### 14.1 Durable event persistence
 
-A WebhookEvent is persisted in the same transaction as the related business transition. A background worker polls committed events and performs HTTP delivery.
+A WebhookEvent is durably persisted in the same business database transaction as
+the related transition. External HTTP delivery occurs outside that transaction.
 
 ### 14.2 Automatic retry policy
 
