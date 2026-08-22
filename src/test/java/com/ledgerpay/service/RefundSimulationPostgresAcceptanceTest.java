@@ -177,6 +177,305 @@ class RefundSimulationPostgresAcceptanceTest {
     }
 
     @Test
+    void partialRefundThenSecondRefundFullyRefundsPayment() {
+        Merchant merchant = createMerchant("Partial Then Full Refund Lifecycle");
+        Payment payment = createSucceededPayment(merchant);
+
+        Refund firstRefund = createRefund(
+                merchant,
+                payment,
+                300L,
+                "partial-then-full-refund-key-a");
+
+        Refund pendingFirstRefund = loadRefund(firstRefund.getId());
+        Payment paymentWithFirstReservation = loadPayment(payment.getId());
+        assertEquals(RefundStatus.PENDING, pendingFirstRefund.getStatus());
+        assertEquals(PaymentStatus.SUCCEEDED, paymentWithFirstReservation.getStatus());
+        assertEquals(0L, paymentWithFirstReservation.getRefundedAmount());
+        assertEquals(300L, paymentWithFirstReservation.getPendingRefundAmount());
+        assertEquals(OrderStatus.PAID, loadOrderStatus(payment));
+        assertTrue(paymentWithFirstReservation.getRefundedAmount()
+                + paymentWithFirstReservation.getPendingRefundAmount()
+                <= paymentWithFirstReservation.getAmount());
+
+        refundService.simulateRefund(
+                merchant,
+                firstRefund.getId(),
+                RefundSimulationOutcome.SUCCEEDED,
+                null);
+
+        Refund succeededFirstRefund = loadRefund(firstRefund.getId());
+        Payment paymentAfterFirstRefund = loadPayment(payment.getId());
+        WebhookEvent firstSucceededEvent = loadOnlyRefundWebhookEvent(firstRefund.getId());
+        assertEquals(RefundStatus.SUCCEEDED, succeededFirstRefund.getStatus());
+        assertEquals(PaymentStatus.SUCCEEDED, paymentAfterFirstRefund.getStatus());
+        assertEquals(300L, paymentAfterFirstRefund.getRefundedAmount());
+        assertEquals(0L, paymentAfterFirstRefund.getPendingRefundAmount());
+        assertEquals(OrderStatus.PARTIALLY_REFUNDED, loadOrderStatus(payment));
+        assertRefundEventEnvelope(
+                firstSucceededEvent,
+                firstRefund,
+                WebhookEventType.REFUND_SUCCEEDED);
+
+        Refund secondRefund = createRefund(
+                merchant,
+                payment,
+                700L,
+                "partial-then-full-refund-key-b");
+
+        Refund pendingSecondRefund = loadRefund(secondRefund.getId());
+        Payment paymentWithSecondReservation = loadPayment(payment.getId());
+        assertEquals(RefundStatus.PENDING, pendingSecondRefund.getStatus());
+        assertEquals(300L, paymentWithSecondReservation.getRefundedAmount());
+        assertEquals(700L, paymentWithSecondReservation.getPendingRefundAmount());
+        assertTrue(paymentWithSecondReservation.getRefundedAmount()
+                + paymentWithSecondReservation.getPendingRefundAmount()
+                <= paymentWithSecondReservation.getAmount());
+
+        refundService.simulateRefund(
+                merchant,
+                secondRefund.getId(),
+                RefundSimulationOutcome.SUCCEEDED,
+                null);
+
+        List<Refund> refundHistory = refundService.listRefundsForPayment(
+                merchant,
+                payment.getId());
+        Payment fullyRefundedPayment = loadPayment(payment.getId());
+        WebhookEvent secondSucceededEvent = loadOnlyRefundWebhookEvent(secondRefund.getId());
+        assertEquals(2, refundHistory.size());
+        assertTrue(refundHistory.stream().anyMatch(refund -> refund.getId().equals(firstRefund.getId())
+                && refund.getStatus() == RefundStatus.SUCCEEDED));
+        assertTrue(refundHistory.stream().anyMatch(refund -> refund.getId().equals(secondRefund.getId())
+                && refund.getStatus() == RefundStatus.SUCCEEDED));
+        assertEquals(PaymentStatus.SUCCEEDED, fullyRefundedPayment.getStatus());
+        assertEquals(1000L, fullyRefundedPayment.getRefundedAmount());
+        assertEquals(0L, fullyRefundedPayment.getPendingRefundAmount());
+        assertEquals(OrderStatus.REFUNDED, loadOrderStatus(payment));
+        assertRefundEventEnvelope(
+                secondSucceededEvent,
+                secondRefund,
+                WebhookEventType.REFUND_SUCCEEDED);
+        assertEquals(1L, countRefundWebhookEvents(firstRefund.getId()));
+        assertEquals(1L, countRefundWebhookEvents(secondRefund.getId()));
+        assertTrue(fullyRefundedPayment.getRefundedAmount()
+                + fullyRefundedPayment.getPendingRefundAmount()
+                <= fullyRefundedPayment.getAmount());
+    }
+
+    @Test
+    void failedRefundReleasesCapacityForNewKeySuccessfulRetry() {
+        Merchant merchant = createMerchant("Failed Refund Capacity Reuse Lifecycle");
+        Payment payment = createSucceededPayment(merchant);
+
+        Refund failedRefund = createRefund(
+                merchant,
+                payment,
+                1000L,
+                "failed-capacity-reuse-refund-key-a");
+
+        Payment paymentWithFullReservation = loadPayment(payment.getId());
+        assertEquals(RefundStatus.PENDING, loadRefund(failedRefund.getId()).getStatus());
+        assertEquals(0L, paymentWithFullReservation.getRefundedAmount());
+        assertEquals(1000L, paymentWithFullReservation.getPendingRefundAmount());
+        assertTrue(paymentWithFullReservation.getRefundedAmount()
+                + paymentWithFullReservation.getPendingRefundAmount()
+                <= paymentWithFullReservation.getAmount());
+
+        refundService.simulateRefund(
+                merchant,
+                failedRefund.getId(),
+                RefundSimulationOutcome.FAILED,
+                RefundFailureCode.REFUND_PROCESSING_ERROR);
+
+        Refund persistedFailedRefund = loadRefund(failedRefund.getId());
+        Payment paymentAfterFailure = loadPayment(payment.getId());
+        WebhookEvent failedEvent = loadOnlyRefundWebhookEvent(failedRefund.getId());
+        assertEquals(RefundStatus.FAILED, persistedFailedRefund.getStatus());
+        assertEquals(
+                RefundFailureCode.REFUND_PROCESSING_ERROR,
+                persistedFailedRefund.getFailureCode());
+        assertEquals(PaymentStatus.SUCCEEDED, paymentAfterFailure.getStatus());
+        assertEquals(0L, paymentAfterFailure.getRefundedAmount());
+        assertEquals(0L, paymentAfterFailure.getPendingRefundAmount());
+        assertEquals(OrderStatus.PAID, loadOrderStatus(payment));
+        assertRefundEventEnvelope(failedEvent, failedRefund, WebhookEventType.REFUND_FAILED);
+
+        Refund successfulRetry = createRefund(
+                merchant,
+                payment,
+                1000L,
+                "failed-capacity-reuse-refund-key-b");
+
+        Payment paymentWithReusedReservation = loadPayment(payment.getId());
+        assertEquals(RefundStatus.PENDING, loadRefund(successfulRetry.getId()).getStatus());
+        assertEquals(0L, paymentWithReusedReservation.getRefundedAmount());
+        assertEquals(1000L, paymentWithReusedReservation.getPendingRefundAmount());
+        assertTrue(paymentWithReusedReservation.getRefundedAmount()
+                + paymentWithReusedReservation.getPendingRefundAmount()
+                <= paymentWithReusedReservation.getAmount());
+
+        refundService.simulateRefund(
+                merchant,
+                successfulRetry.getId(),
+                RefundSimulationOutcome.SUCCEEDED,
+                null);
+
+        Refund stillFailedRefund = loadRefund(failedRefund.getId());
+        Refund succeededRetry = loadRefund(successfulRetry.getId());
+        List<Refund> refundHistory = refundService.listRefundsForPayment(
+                merchant,
+                payment.getId());
+        Payment fullyRefundedPayment = loadPayment(payment.getId());
+        WebhookEvent succeededEvent = loadOnlyRefundWebhookEvent(successfulRetry.getId());
+        assertEquals(RefundStatus.FAILED, stillFailedRefund.getStatus());
+        assertEquals(RefundStatus.SUCCEEDED, succeededRetry.getStatus());
+        assertEquals(2, refundHistory.size());
+        assertTrue(refundHistory.stream().anyMatch(refund -> refund.getId().equals(failedRefund.getId())
+                && refund.getStatus() == RefundStatus.FAILED));
+        assertTrue(refundHistory.stream().anyMatch(refund -> refund.getId().equals(successfulRetry.getId())
+                && refund.getStatus() == RefundStatus.SUCCEEDED));
+        assertEquals(PaymentStatus.SUCCEEDED, fullyRefundedPayment.getStatus());
+        assertEquals(1000L, fullyRefundedPayment.getRefundedAmount());
+        assertEquals(0L, fullyRefundedPayment.getPendingRefundAmount());
+        assertEquals(OrderStatus.REFUNDED, loadOrderStatus(payment));
+        assertRefundEventEnvelope(succeededEvent, successfulRetry, WebhookEventType.REFUND_SUCCEEDED);
+        assertEquals(1L, countRefundWebhookEvents(failedRefund.getId()));
+        assertEquals(1L, countRefundWebhookEvents(successfulRetry.getId()));
+        assertTrue(fullyRefundedPayment.getRefundedAmount()
+                + fullyRefundedPayment.getPendingRefundAmount()
+                <= fullyRefundedPayment.getAmount());
+    }
+
+    @Test
+    void succeededRefundExactReplayReturnsHistoricalRefund() {
+        Merchant merchant = createMerchant("Succeeded Refund Historical Replay");
+        Payment payment = createSucceededPayment(merchant);
+        String idempotencyKey = "succeeded-historical-replay-key";
+        CreateRefundRequest request = new CreateRefundRequest(
+                1000L,
+                RefundReasonCode.CUSTOMER_REQUEST);
+        RefundCreationResult creation = refundService.createRefund(
+                merchant,
+                payment.getId(),
+                request,
+                idempotencyKey);
+        Refund refund = creation.refund();
+
+        refundService.simulateRefund(
+                merchant,
+                refund.getId(),
+                RefundSimulationOutcome.SUCCEEDED,
+                null);
+
+        Refund succeededRefund = loadRefund(refund.getId());
+        Payment paymentBeforeReplay = loadPayment(payment.getId());
+        int refundCountBeforeReplay = refundService.listRefundsForPayment(
+                        merchant,
+                        payment.getId())
+                .size();
+        long eventCountBeforeReplay = countRefundWebhookEvents(refund.getId());
+        assertEquals(RefundStatus.SUCCEEDED, succeededRefund.getStatus());
+        assertEquals(PaymentStatus.SUCCEEDED, paymentBeforeReplay.getStatus());
+        assertEquals(1000L, paymentBeforeReplay.getRefundedAmount());
+        assertEquals(0L, paymentBeforeReplay.getPendingRefundAmount());
+        assertEquals(OrderStatus.REFUNDED, loadOrderStatus(payment));
+        assertEquals(
+                0L,
+                paymentBeforeReplay.getAmount()
+                        - paymentBeforeReplay.getRefundedAmount()
+                        - paymentBeforeReplay.getPendingRefundAmount());
+        assertEquals(1, refundCountBeforeReplay);
+        assertEquals(1L, eventCountBeforeReplay);
+
+        RefundCreationResult replay = refundService.createRefund(
+                merchant,
+                payment.getId(),
+                request,
+                idempotencyKey);
+
+        Payment paymentAfterReplay = loadPayment(payment.getId());
+        assertTrue(replay.replayed());
+        assertEquals(refund.getId(), replay.refund().getId());
+        assertEquals(RefundStatus.SUCCEEDED, replay.refund().getStatus());
+        assertEquals(
+                refundCountBeforeReplay,
+                refundService.listRefundsForPayment(merchant, payment.getId()).size());
+        assertEquals(PaymentStatus.SUCCEEDED, paymentAfterReplay.getStatus());
+        assertEquals(1000L, paymentAfterReplay.getRefundedAmount());
+        assertEquals(0L, paymentAfterReplay.getPendingRefundAmount());
+        assertEquals(OrderStatus.REFUNDED, loadOrderStatus(payment));
+        assertEquals(eventCountBeforeReplay, countRefundWebhookEvents(refund.getId()));
+    }
+
+    @Test
+    void failedRefundExactReplayReturnsHistoricalRefund() {
+        Merchant merchant = createMerchant("Failed Refund Historical Replay");
+        Payment payment = createSucceededPayment(merchant);
+        String idempotencyKey = "failed-historical-replay-key";
+        CreateRefundRequest request = new CreateRefundRequest(
+                1000L,
+                RefundReasonCode.CUSTOMER_REQUEST);
+        RefundCreationResult creation = refundService.createRefund(
+                merchant,
+                payment.getId(),
+                request,
+                idempotencyKey);
+        Refund refund = creation.refund();
+
+        refundService.simulateRefund(
+                merchant,
+                refund.getId(),
+                RefundSimulationOutcome.FAILED,
+                RefundFailureCode.REFUND_PROCESSING_ERROR);
+
+        Refund failedRefund = loadRefund(refund.getId());
+        Payment paymentBeforeReplay = loadPayment(payment.getId());
+        int refundCountBeforeReplay = refundService.listRefundsForPayment(
+                        merchant,
+                        payment.getId())
+                .size();
+        long eventCountBeforeReplay = countRefundWebhookEvents(refund.getId());
+        assertEquals(RefundStatus.FAILED, failedRefund.getStatus());
+        assertEquals(
+                RefundFailureCode.REFUND_PROCESSING_ERROR,
+                failedRefund.getFailureCode());
+        assertEquals(PaymentStatus.SUCCEEDED, paymentBeforeReplay.getStatus());
+        assertEquals(0L, paymentBeforeReplay.getRefundedAmount());
+        assertEquals(0L, paymentBeforeReplay.getPendingRefundAmount());
+        assertEquals(OrderStatus.PAID, loadOrderStatus(payment));
+        assertEquals(
+                1000L,
+                paymentBeforeReplay.getAmount()
+                        - paymentBeforeReplay.getRefundedAmount()
+                        - paymentBeforeReplay.getPendingRefundAmount());
+        assertEquals(1, refundCountBeforeReplay);
+        assertEquals(1L, eventCountBeforeReplay);
+
+        RefundCreationResult replay = refundService.createRefund(
+                merchant,
+                payment.getId(),
+                request,
+                idempotencyKey);
+
+        Payment paymentAfterReplay = loadPayment(payment.getId());
+        assertTrue(replay.replayed());
+        assertEquals(refund.getId(), replay.refund().getId());
+        assertEquals(RefundStatus.FAILED, replay.refund().getStatus());
+        assertEquals(
+                RefundFailureCode.REFUND_PROCESSING_ERROR,
+                replay.refund().getFailureCode());
+        assertEquals(
+                refundCountBeforeReplay,
+                refundService.listRefundsForPayment(merchant, payment.getId()).size());
+        assertEquals(PaymentStatus.SUCCEEDED, paymentAfterReplay.getStatus());
+        assertEquals(0L, paymentAfterReplay.getRefundedAmount());
+        assertEquals(0L, paymentAfterReplay.getPendingRefundAmount());
+        assertEquals(OrderStatus.PAID, loadOrderStatus(payment));
+        assertEquals(eventCountBeforeReplay, countRefundWebhookEvents(refund.getId()));
+    }
+
+    @Test
     void succeededRefundRejectsRepeatedSimulationWithoutChangingSummariesAgain() {
         Merchant merchant = createMerchant("Repeated Refund Simulation");
         Payment payment = createSucceededPayment(merchant);
