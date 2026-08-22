@@ -24,15 +24,24 @@ import com.ledgerpay.entity.Payment;
 import com.ledgerpay.entity.PaymentFailureCode;
 import com.ledgerpay.entity.PaymentStatus;
 import com.ledgerpay.entity.Refund;
+import com.ledgerpay.entity.RefundFailureCode;
 import com.ledgerpay.entity.RefundReasonCode;
+import com.ledgerpay.entity.RefundSimulationOutcome;
 import com.ledgerpay.entity.RefundStatus;
 import com.ledgerpay.exception.IdempotencyConflictException;
 import com.ledgerpay.exception.InsufficientRefundableAmountException;
 import com.ledgerpay.exception.PaymentNotFoundException;
 import com.ledgerpay.exception.PaymentNotRefundableException;
 import com.ledgerpay.exception.RefundNotFoundException;
+import com.ledgerpay.exception.RefundInvalidStateException;
 import com.ledgerpay.repository.PaymentRepository;
+import com.ledgerpay.repository.PaymentRefundSummary;
+import com.ledgerpay.repository.PaymentRefundSummaryRepository;
 import com.ledgerpay.repository.RefundRepository;
+import com.ledgerpay.repository.OrderRepository;
+import com.ledgerpay.repository.WebhookEventRepository;
+
+import tools.jackson.databind.ObjectMapper;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -40,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -61,6 +71,15 @@ class RefundServiceTest {
     private RefundRepository refundRepository;
 
     @Mock
+    private PaymentRefundSummaryRepository paymentRefundSummaryRepository;
+
+    @Mock
+    private OrderRepository orderRepository;
+
+    @Mock
+    private WebhookEventRepository webhookEventRepository;
+
+    @Mock
     private PlatformTransactionManager transactionManager;
 
     @Mock
@@ -73,6 +92,10 @@ class RefundServiceTest {
         refundService = new RefundService(
                 paymentRepository,
                 refundRepository,
+                paymentRefundSummaryRepository,
+                orderRepository,
+                webhookEventRepository,
+                new ObjectMapper(),
                 transactionManager);
     }
 
@@ -163,6 +186,114 @@ class RefundServiceTest {
         assertPaymentHistoryNotFound(
                 persistedMerchant("history-foreign@example.com"),
                 UUID.randomUUID());
+    }
+
+    @Test
+    void simulateSucceededRefundUsesMerchantScopeAndAtomicSuccessUpdate() {
+        Merchant merchant = persistedMerchant("simulate-success@example.com");
+        Payment payment = succeededPayment(merchant, 1000L);
+        Refund refund = persistedRefund(new Refund(
+                payment,
+                300L,
+                RefundReasonCode.CUSTOMER_REQUEST,
+                IDEMPOTENCY_KEY));
+        when(refundRepository.findByIdAndMerchantId(refund.getId(), merchant.getId()))
+                .thenReturn(Optional.of(refund));
+        when(refundRepository.saveAndFlush(refund)).thenReturn(refund);
+        when(paymentRefundSummaryRepository.completeSucceededRefund(
+                        payment.getId(), merchant.getId(), 300L))
+                .thenReturn(new PaymentRefundSummary(1000L, 300L, 0L));
+
+        Refund result = refundService.simulateRefund(
+                merchant,
+                refund.getId(),
+                RefundSimulationOutcome.SUCCEEDED,
+                null);
+
+        assertSame(refund, result);
+        assertEquals(RefundStatus.SUCCEEDED, result.getStatus());
+        assertEquals(null, result.getFailureCode());
+        verify(paymentRefundSummaryRepository).completeSucceededRefund(
+                payment.getId(), merchant.getId(), 300L);
+        verify(paymentRefundSummaryRepository, never())
+                .completeFailedRefund(any(), any(), anyLong());
+        assertEquals(
+                com.ledgerpay.entity.OrderStatus.PARTIALLY_REFUNDED,
+                payment.getOrder().getStatus());
+        verify(orderRepository).save(payment.getOrder());
+        verify(webhookEventRepository).save(any(com.ledgerpay.entity.WebhookEvent.class));
+    }
+
+    @Test
+    void simulateFailedRefundUsesAtomicFailureUpdate() {
+        Merchant merchant = persistedMerchant("simulate-failure@example.com");
+        Payment payment = succeededPayment(merchant, 1000L);
+        Refund refund = persistedRefund(new Refund(
+                payment,
+                300L,
+                RefundReasonCode.CUSTOMER_REQUEST,
+                IDEMPOTENCY_KEY));
+        when(refundRepository.findByIdAndMerchantId(refund.getId(), merchant.getId()))
+                .thenReturn(Optional.of(refund));
+        when(refundRepository.saveAndFlush(refund)).thenReturn(refund);
+
+        Refund result = refundService.simulateRefund(
+                merchant,
+                refund.getId(),
+                RefundSimulationOutcome.FAILED,
+                RefundFailureCode.REFUND_PROCESSING_ERROR);
+
+        assertEquals(RefundStatus.FAILED, result.getStatus());
+        assertEquals(RefundFailureCode.REFUND_PROCESSING_ERROR, result.getFailureCode());
+        verify(paymentRefundSummaryRepository).completeFailedRefund(
+                payment.getId(), merchant.getId(), 300L);
+        verify(paymentRefundSummaryRepository, never())
+                .completeSucceededRefund(any(), any(), anyLong());
+        verifyNoInteractions(orderRepository);
+        verify(webhookEventRepository).save(any(com.ledgerpay.entity.WebhookEvent.class));
+    }
+
+    @Test
+    void simulateTerminalRefundRejectsBeforeAnyWrite() {
+        Merchant merchant = persistedMerchant("simulate-repeat@example.com");
+        Payment payment = succeededPayment(merchant, 1000L);
+        Refund refund = persistedRefund(new Refund(
+                payment,
+                300L,
+                RefundReasonCode.CUSTOMER_REQUEST,
+                IDEMPOTENCY_KEY));
+        refund.markSucceeded();
+        when(refundRepository.findByIdAndMerchantId(refund.getId(), merchant.getId()))
+                .thenReturn(Optional.of(refund));
+
+        assertThrows(
+                RefundInvalidStateException.class,
+                () -> refundService.simulateRefund(
+                        merchant,
+                        refund.getId(),
+                        RefundSimulationOutcome.SUCCEEDED,
+                        null));
+
+        verify(refundRepository, never()).saveAndFlush(any(Refund.class));
+        verifyNoInteractions(paymentRefundSummaryRepository);
+    }
+
+    @Test
+    void simulateForeignRefundIsHiddenAsNotFound() {
+        Merchant merchant = persistedMerchant("simulate-foreign@example.com");
+        UUID refundId = UUID.randomUUID();
+        when(refundRepository.findByIdAndMerchantId(refundId, merchant.getId()))
+                .thenReturn(Optional.empty());
+
+        assertThrows(
+                RefundNotFoundException.class,
+                () -> refundService.simulateRefund(
+                        merchant,
+                        refundId,
+                        RefundSimulationOutcome.SUCCEEDED,
+                        null));
+
+        verifyNoInteractions(paymentRefundSummaryRepository);
     }
 
     @Test

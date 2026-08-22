@@ -13,7 +13,9 @@ import com.ledgerpay.entity.MerchantOrder;
 import com.ledgerpay.entity.OrderStatus;
 import com.ledgerpay.entity.Payment;
 import com.ledgerpay.entity.Refund;
+import com.ledgerpay.entity.RefundFailureCode;
 import com.ledgerpay.entity.RefundReasonCode;
+import com.ledgerpay.entity.RefundSimulationOutcome;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
@@ -51,6 +53,24 @@ class RefundDtoTest {
         assertViolationFields(
                 new CreateRefundRequest(-1L, RefundReasonCode.OTHER),
                 "amount");
+    }
+
+    @Test
+    void acceptsOnlyValidRefundSimulationCombinations() {
+        assertTrue(validator.validate(new SimulateRefundRequest(
+                RefundSimulationOutcome.SUCCEEDED,
+                null)).isEmpty());
+        assertTrue(validator.validate(new SimulateRefundRequest(
+                RefundSimulationOutcome.FAILED,
+                RefundFailureCode.REFUND_PROCESSING_ERROR)).isEmpty());
+
+        assertFalse(validator.validate(new SimulateRefundRequest(null, null)).isEmpty());
+        assertFalse(validator.validate(new SimulateRefundRequest(
+                RefundSimulationOutcome.SUCCEEDED,
+                RefundFailureCode.REFUND_PROCESSING_ERROR)).isEmpty());
+        assertFalse(validator.validate(new SimulateRefundRequest(
+                RefundSimulationOutcome.FAILED,
+                null)).isEmpty());
     }
 
     @Test

@@ -32,6 +32,7 @@ public class GlobalExceptionHandler {
     private static final String PAYMENT_NOT_REFUNDABLE = "PAYMENT_NOT_REFUNDABLE";
     private static final String INSUFFICIENT_REFUNDABLE_AMOUNT =
             "INSUFFICIENT_REFUNDABLE_AMOUNT";
+    private static final String REFUND_INVALID_STATE = "REFUND_INVALID_STATE";
     private static final String ORDER_ALREADY_PAID = "ORDER_ALREADY_PAID";
     private static final String ORDER_INVALID_STATE = "ORDER_INVALID_STATE";
     private static final String INTERNAL_ERROR = "INTERNAL_ERROR";
@@ -176,6 +177,15 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ApiErrorResponse(
                         INSUFFICIENT_REFUNDABLE_AMOUNT,
+                        exception.getMessage()));
+    }
+
+    @ExceptionHandler(RefundInvalidStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleRefundInvalidState(
+            RefundInvalidStateException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(
+                        REFUND_INVALID_STATE,
                         exception.getMessage()));
     }
 

@@ -21,6 +21,8 @@ import com.ledgerpay.entity.MerchantOrder;
 import com.ledgerpay.entity.OrderStatus;
 import com.ledgerpay.entity.Payment;
 import com.ledgerpay.entity.PaymentFailureCode;
+import com.ledgerpay.entity.Refund;
+import com.ledgerpay.entity.RefundReasonCode;
 import com.ledgerpay.entity.WebhookEvent;
 import com.ledgerpay.entity.WebhookEventType;
 import com.ledgerpay.entity.WebhookStatus;
@@ -46,6 +48,9 @@ class WebhookEventRepositoryTest {
 
     @Autowired
     private PaymentRepository paymentRepository;
+
+    @Autowired
+    private RefundRepository refundRepository;
 
     @Autowired
     private OrderRepository orderRepository;
@@ -89,6 +94,7 @@ class WebhookEventRepositoryTest {
         assertNotNull(reloadedEvent.getId());
         assertEquals(merchant.getId(), reloadedEvent.getMerchant().getId());
         assertEquals(payment.getId(), reloadedEvent.getPayment().getId());
+        assertNull(reloadedEvent.getRefund());
         assertEquals(WebhookEventType.PAYMENT_SUCCEEDED, reloadedEvent.getEventType());
         assertEquals(payload, reloadedEvent.getPayload());
         assertEquals(WebhookStatus.PENDING, reloadedEvent.getStatus());
@@ -129,6 +135,119 @@ class WebhookEventRepositoryTest {
         assertEquals(
                 "PAYMENT_DECLINED",
                 reloadedEvent.getPayload().path("payment").path("failureCode").stringValue());
+    }
+
+    @Test
+    void savesAndReloadsPendingRefundSucceededEvent() throws Exception {
+        Merchant merchant = persistMerchant("Refund Event Merchant");
+        Payment payment = persistSucceededPayment(merchant, "refund-event-payment");
+        Refund refund = persistRefund(payment, "refund-event-key");
+        JsonNode payload = objectMapper.readTree("""
+                {
+                  "refund": {
+                    "id": "re_%s",
+                    "paymentId": "pay_%s",
+                    "amount": 300,
+                    "currency": "EUR",
+                    "reasonCode": "CUSTOMER_REQUEST",
+                    "status": "SUCCEEDED",
+                    "failureCode": null
+                  }
+                }
+                """.formatted(refund.getId(), payment.getId()));
+
+        WebhookEvent savedEvent = webhookEventRepository.saveAndFlush(
+                new WebhookEvent(refund, WebhookEventType.REFUND_SUCCEEDED, payload));
+        UUID eventId = savedEvent.getId();
+        entityManager.clear();
+
+        WebhookEvent reloadedEvent = webhookEventRepository.findById(eventId).orElseThrow();
+
+        assertEquals(merchant.getId(), reloadedEvent.getMerchant().getId());
+        assertNull(reloadedEvent.getPayment());
+        assertEquals(refund.getId(), reloadedEvent.getRefund().getId());
+        assertEquals(WebhookEventType.REFUND_SUCCEEDED, reloadedEvent.getEventType());
+        assertEquals(payload, reloadedEvent.getPayload());
+        assertEquals(WebhookStatus.PENDING, reloadedEvent.getStatus());
+        assertEquals(0, reloadedEvent.getAttemptCount());
+    }
+
+    @Test
+    void rejectsEventReferencingBothPaymentAndRefund() {
+        Merchant merchant = persistMerchant("Both Sources Merchant");
+        Payment payment = persistSucceededPayment(merchant, "both-sources-payment");
+        Refund refund = persistRefund(payment, "both-sources-refund");
+
+        assertThrows(
+                DataIntegrityViolationException.class,
+                () -> insertSourcedWebhookEvent(
+                        merchant.getId(),
+                        "PAYMENT_SUCCEEDED",
+                        payment.getId(),
+                        refund.getId()));
+    }
+
+    @Test
+    void rejectsEventReferencingNeitherPaymentNorRefund() {
+        Merchant merchant = persistMerchant("No Source Merchant");
+
+        assertThrows(
+                DataIntegrityViolationException.class,
+                () -> insertSourcedWebhookEvent(
+                        merchant.getId(),
+                        "PAYMENT_SUCCEEDED",
+                        null,
+                        null));
+    }
+
+    @Test
+    void rejectsRefundEventWhoseMerchantDoesNotOwnRefund() {
+        Merchant refundMerchant = persistMerchant("Refund Owner Merchant");
+        Merchant eventMerchant = persistMerchant("Foreign Refund Event Merchant");
+        Payment payment = persistSucceededPayment(refundMerchant, "owned-refund-payment");
+        Refund refund = persistRefund(payment, "owned-refund-key");
+
+        assertThrows(
+                DataIntegrityViolationException.class,
+                () -> insertSourcedWebhookEvent(
+                        eventMerchant.getId(),
+                        "REFUND_SUCCEEDED",
+                        null,
+                        refund.getId()));
+    }
+
+    @ParameterizedTest
+    @MethodSource("invalidEventTypeSources")
+    void rejectsEventTypeThatDoesNotMatchSource(boolean usePaymentSource, String eventType) {
+        Merchant merchant = persistMerchant("Type Source Merchant");
+        Payment payment = persistSucceededPayment(merchant, UUID.randomUUID().toString());
+        Refund refund = persistRefund(payment, UUID.randomUUID().toString());
+
+        assertThrows(
+                DataIntegrityViolationException.class,
+                () -> insertSourcedWebhookEvent(
+                        merchant.getId(),
+                        eventType,
+                        usePaymentSource ? payment.getId() : null,
+                        usePaymentSource ? null : refund.getId()));
+    }
+
+    @Test
+    void rejectsDuplicateEventTypeForSameRefund() throws Exception {
+        Merchant merchant = persistMerchant("Duplicate Refund Event Merchant");
+        Payment payment = persistSucceededPayment(merchant, "duplicate-refund-event-payment");
+        Refund refund = persistRefund(payment, "duplicate-refund-event-key");
+        JsonNode payload = objectMapper.readTree("{\"refund\":{\"status\":\"SUCCEEDED\"}}");
+        webhookEventRepository.saveAndFlush(
+                new WebhookEvent(refund, WebhookEventType.REFUND_SUCCEEDED, payload));
+
+        assertThrows(
+                DataIntegrityViolationException.class,
+                () -> webhookEventRepository.saveAndFlush(
+                        new WebhookEvent(
+                                refund,
+                                WebhookEventType.REFUND_SUCCEEDED,
+                                payload)));
     }
 
     @Test
@@ -242,6 +361,12 @@ class WebhookEventRepositoryTest {
                 Arguments.of("FAILED", 0, null, null, null));
     }
 
+    private static Stream<Arguments> invalidEventTypeSources() {
+        return Stream.of(
+                Arguments.of(true, "REFUND_SUCCEEDED"),
+                Arguments.of(false, "PAYMENT_SUCCEEDED"));
+    }
+
     private Merchant persistMerchant(String name) {
         String uniqueValue = UUID.randomUUID().toString().replace("-", "");
         return merchantRepository.saveAndFlush(new Merchant(
@@ -262,6 +387,14 @@ class WebhookEventRepositoryTest {
         Payment payment = new Payment(order, idempotencyKey);
         payment.markFailed(PaymentFailureCode.PAYMENT_DECLINED, COMPLETED_AT);
         return paymentRepository.saveAndFlush(payment);
+    }
+
+    private Refund persistRefund(Payment payment, String idempotencyKey) {
+        return refundRepository.saveAndFlush(new Refund(
+                payment,
+                300L,
+                RefundReasonCode.CUSTOMER_REQUEST,
+                idempotencyKey));
     }
 
     private MerchantOrder persistPaymentPendingOrder(Merchant merchant) {
@@ -304,5 +437,30 @@ class WebhookEventRepositoryTest {
                 lastAttemptAt == null ? null : Timestamp.from(lastAttemptAt),
                 deliveredAt == null ? null : Timestamp.from(deliveredAt),
                 lastFailureCode);
+    }
+
+    private void insertSourcedWebhookEvent(
+            UUID merchantId,
+            String eventType,
+            UUID paymentId,
+            UUID refundId) {
+        jdbcTemplate.update(
+                """
+                INSERT INTO webhook_event (
+                    id,
+                    merchant_id,
+                    event_type,
+                    payment_id,
+                    refund_id,
+                    payload
+                )
+                VALUES (?, ?, ?, ?, ?, CAST(? AS JSONB))
+                """,
+                UUID.randomUUID(),
+                merchantId,
+                eventType,
+                paymentId,
+                refundId,
+                "{}");
     }
 }
