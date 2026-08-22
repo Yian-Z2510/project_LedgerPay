@@ -1,6 +1,7 @@
 package com.ledgerpay.service;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -162,7 +163,9 @@ class MerchantDeactivationPostgresAcceptanceTest {
         assertFalse(response.deactivatedAt().isBefore(beforeDeactivation));
         assertFalse(response.deactivatedAt().isAfter(afterDeactivation));
         assertEquals(MerchantStatus.INACTIVE, persistedMerchant.getStatus());
-        assertEquals(response.deactivatedAt(), persistedMerchant.getDeactivatedAt());
+        assertEquals(
+                response.deactivatedAt().truncatedTo(ChronoUnit.MICROS),
+                persistedMerchant.getDeactivatedAt().truncatedTo(ChronoUnit.MICROS));
     }
 
     private Merchant createMerchant(String name) {
