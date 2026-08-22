@@ -1,6 +1,8 @@
 package com.ledgerpay.service;
 
+import java.time.Instant;
 import java.util.Locale;
+import java.util.UUID;
 
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -13,8 +15,16 @@ import com.ledgerpay.dto.MerchantResponse;
 import com.ledgerpay.dto.RotateApiKeyResponse;
 import com.ledgerpay.dto.UpdateMerchantRequest;
 import com.ledgerpay.entity.Merchant;
+import com.ledgerpay.entity.MerchantStatus;
+import com.ledgerpay.entity.PaymentStatus;
+import com.ledgerpay.entity.RefundStatus;
+import com.ledgerpay.entity.WebhookStatus;
 import com.ledgerpay.exception.MerchantEmailAlreadyExistsException;
+import com.ledgerpay.exception.MerchantHasUnfinishedOperationsException;
 import com.ledgerpay.repository.MerchantRepository;
+import com.ledgerpay.repository.PaymentRepository;
+import com.ledgerpay.repository.RefundRepository;
+import com.ledgerpay.repository.WebhookEventRepository;
 
 @Service
 public class MerchantService {
@@ -24,10 +34,21 @@ public class MerchantService {
 
     private final MerchantRepository merchantRepository;
     private final ApiKeyService apiKeyService;
+    private final PaymentRepository paymentRepository;
+    private final RefundRepository refundRepository;
+    private final WebhookEventRepository webhookEventRepository;
 
-    public MerchantService(MerchantRepository merchantRepository, ApiKeyService apiKeyService) {
+    public MerchantService(
+            MerchantRepository merchantRepository,
+            ApiKeyService apiKeyService,
+            PaymentRepository paymentRepository,
+            RefundRepository refundRepository,
+            WebhookEventRepository webhookEventRepository) {
         this.merchantRepository = merchantRepository;
         this.apiKeyService = apiKeyService;
+        this.paymentRepository = paymentRepository;
+        this.refundRepository = refundRepository;
+        this.webhookEventRepository = webhookEventRepository;
     }
 
     @Transactional
@@ -73,6 +94,29 @@ public class MerchantService {
         authenticatedMerchant.setApiKeyHash(generatedApiKey.hash());
         merchantRepository.save(authenticatedMerchant);
         return new RotateApiKeyResponse(generatedApiKey.plaintext());
+    }
+
+    @Transactional
+    public MerchantResponse deactivate(Merchant authenticatedMerchant) {
+        UUID merchantId = authenticatedMerchant.getId();
+        boolean hasUnfinishedOperations = paymentRepository.existsByMerchantIdAndStatus(
+                        merchantId,
+                        PaymentStatus.PENDING)
+                || refundRepository.existsByMerchantIdAndStatus(
+                        merchantId,
+                        RefundStatus.PENDING)
+                || webhookEventRepository.existsByMerchantIdAndStatus(
+                        merchantId,
+                        WebhookStatus.PENDING);
+
+        if (hasUnfinishedOperations) {
+            throw new MerchantHasUnfinishedOperationsException();
+        }
+
+        authenticatedMerchant.setStatus(MerchantStatus.INACTIVE);
+        authenticatedMerchant.setDeactivatedAt(Instant.now());
+        Merchant savedMerchant = merchantRepository.saveAndFlush(authenticatedMerchant);
+        return toMerchantResponse(savedMerchant);
     }
 
     private boolean isEmailUniqueConstraintViolation(DataIntegrityViolationException exception) {

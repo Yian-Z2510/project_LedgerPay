@@ -71,11 +71,12 @@ Payments and refunds do **not** auto-complete. The integrator must explicitly si
 ### Refund
 
 1. **Create** — The integrator requests a refund on a `SUCCEEDED` Payment with available refundable capacity.
-  - If the request is **invalid** (e.g. payment not refundable, amount too high), the refund is `**failed` immediately** and a `refund.failed` webhook is sent.
-  - If the request is **valid**, the refund is `**pending`** and waits for simulation. The payment balance does **not** change yet.
-2. **Simulate** — The integrator calls a simulate action with `success` or `failure`.
-  - On **success**, the refund becomes `succeeded`, the payment’s refunded amount is updated, and a `refund.succeeded` webhook is sent.
-  - On **failure**, the refund becomes `failed` and a `refund.failed` webhook is sent. The payment balance is unchanged.
+  - The amount is always required, including for a full refund, which explicitly supplies the remaining amount.
+  - If the request is **invalid** because the Payment is not refundable or capacity is insufficient, the API returns an error. No Refund row, `FAILED` Refund, or `refund.failed` WebhookEvent is created.
+  - If the request is **valid**, the Refund becomes `PENDING`, and `Payment.pendingRefundAmount` increases by its amount to reserve capacity. `Payment.refundedAmount` does not increase yet.
+2. **Simulate** — The integrator calls a simulate action with `SUCCEEDED` or `FAILED`.
+  - On **success**, the Refund becomes `SUCCEEDED`, the pending reservation moves to `Payment.refundedAmount`, and a `refund.succeeded` event is persisted.
+  - On **failure**, the Refund becomes `FAILED`, the pending reservation is released without increasing `Payment.refundedAmount`, and a `refund.failed` event is persisted.
 
 ## Payment Lifecycle
 
@@ -110,39 +111,40 @@ Payment state machine.
 
 | Status       | Meaning                                                         |
 | ------------ | --------------------------------------------------------------- |
-| `pending`    | Refund accepted; waiting for simulation                         |
-| `processing` | Brief step while simulation runs                                |
-| `succeeded`  | Refund completed; payment balance updated                       |
-| `failed`     | Refund rejected or simulation failed; payment balance unchanged |
+| `PENDING`    | Refund accepted; waiting for simulation                         |
+| `SUCCEEDED`  | Refund completed; payment balance updated                       |
+| `FAILED`     | Accepted Refund failed during simulation; payment balance unchanged |
 
 
 ### Main flow
 
-**Immediate failure (on create):**
+`PENDING` → (simulate) → `SUCCEEDED` or `FAILED`
 
-`(invalid refund request)` → `failed` → `refund.failed` webhook
-
-**Accepted refund:**
-
-`pending` → (simulate) → `succeeded` or `failed`
-
-On `succeeded`, the Payment refund aggregate fields are updated. The related
+On `SUCCEEDED`, the Payment refund aggregate fields are updated. The related
 Order becomes `PARTIALLY_REFUNDED` or `REFUNDED` depending on the remaining
 refundable balance; the Payment remains `SUCCEEDED`.
 
 ### Rules
 
-- Simulate refund only when status is `pending`.
+- Simulate refund only when status is `PENDING`.
 - Create a refund only when the Payment status is `SUCCEEDED` and refundable capacity remains.
 - Multiple partial refunds are allowed until the full payment amount is refunded.
-- Payment refund aggregate fields update **only** when a refund reaches `succeeded`.
+- Accepted `PENDING` Refunds increase `pendingRefundAmount`; `refundedAmount`
+  increases only when a Refund reaches `SUCCEEDED`.
+- Repeated simulation of a terminal Refund is rejected.
 
 ## Refund Rules
 
-- One refund action handles both **partial** and **full** refunds: send an amount for partial; omit amount (or send remaining balance) for full.
+- One refund action handles both **partial** and **full** refunds. `amount` is
+  always required; a full Refund explicitly sends the remaining amount.
 - A single refund cannot exceed the **remaining** refundable amount.
 - All refunds are in EUR and match the original payment.
-- Invalid create requests fail immediately with `failed` status and a `refund.failed` webhook (no simulation step).
+- `PAYMENT_NOT_REFUNDABLE` and `INSUFFICIENT_REFUNDABLE_AMOUNT` are request-level
+  errors and do not persist a Refund or WebhookEvent.
+- Refund idempotency is scoped by Merchant. Its request identity is
+  `paymentId + amount + reasonCode`; the same key and identity return the same
+  historical Refund even after a terminal result. A genuine retry after
+  `FAILED` requires a new idempotency key and creates a new Refund.
 
 ## Webhooks
 
@@ -158,8 +160,12 @@ When a payment or refund reaches a meaningful end state, the system emits a webh
 **Behavior (MVP):**
 
 - Events fire automatically on status change (not a separate manual “simulate webhook” step).
-- If the payment has a **callback URL**, the system POSTs the event there.
 - All events are stored so they can be looked up for debugging (even if no callback URL was set).
+- A terminal Refund snapshot contains `id`, `paymentId`, `amount`, `currency`,
+  `reasonCode`, `status`, and `failureCode`.
+- The WebhookEvent row is durably persisted in the same business database
+  transaction. External HTTP delivery occurs outside that transaction and is
+  not yet implemented.
 
 ## MVP Scope
 
@@ -180,7 +186,12 @@ When a payment or refund reaches a meaningful end state, the system emits a webh
 
 - Emit events on payment and refund status changes
 - Store events for lookup
-- Deliver to callback URL when provided
+- Persist Payment and Refund terminal events for later delivery
+
+### Merchant
+
+- Soft-deactivate when no `PENDING` Payment, Refund, or WebhookEvent exists;
+  terminal and historical records do not block deactivation
 
 ### Non-functional
 

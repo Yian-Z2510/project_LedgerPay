@@ -23,6 +23,8 @@ public class GlobalExceptionHandler {
 
     private static final String VALIDATION_ERROR = "VALIDATION_ERROR";
     private static final String MERCHANT_EMAIL_ALREADY_EXISTS = "MERCHANT_EMAIL_ALREADY_EXISTS";
+    private static final String MERCHANT_HAS_UNFINISHED_OPERATIONS =
+            "MERCHANT_HAS_UNFINISHED_OPERATIONS";
     private static final String ORDER_NOT_FOUND = "ORDER_NOT_FOUND";
     private static final String PAYMENT_NOT_FOUND = "PAYMENT_NOT_FOUND";
     private static final String REFUND_NOT_FOUND = "REFUND_NOT_FOUND";
@@ -70,6 +72,15 @@ public class GlobalExceptionHandler {
                 .body(new ApiErrorResponse(
                         MERCHANT_EMAIL_ALREADY_EXISTS,
                         "A merchant with this email already exists."));
+    }
+
+    @ExceptionHandler(MerchantHasUnfinishedOperationsException.class)
+    public ResponseEntity<ApiErrorResponse> handleMerchantHasUnfinishedOperations(
+            MerchantHasUnfinishedOperationsException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(
+                        MERCHANT_HAS_UNFINISHED_OPERATIONS,
+                        exception.getMessage()));
     }
 
     @ExceptionHandler(OrderNotFoundException.class)

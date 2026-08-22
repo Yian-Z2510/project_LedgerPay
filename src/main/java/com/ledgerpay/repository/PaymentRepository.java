@@ -23,6 +23,8 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
 
     Optional<Payment> findByMerchantIdAndIdempotencyKey(UUID merchantId, String idempotencyKey);
 
+    boolean existsByMerchantIdAndStatus(UUID merchantId, PaymentStatus status);
+
     List<Payment> findByOrderIdOrderByCreatedAtDesc(UUID orderId);
 
     boolean existsByOrderId(UUID orderId);

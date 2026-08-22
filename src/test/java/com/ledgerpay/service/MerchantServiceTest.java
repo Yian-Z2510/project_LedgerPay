@@ -22,6 +22,9 @@ import com.ledgerpay.dto.UpdateMerchantRequest;
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.exception.MerchantEmailAlreadyExistsException;
 import com.ledgerpay.repository.MerchantRepository;
+import com.ledgerpay.repository.PaymentRepository;
+import com.ledgerpay.repository.RefundRepository;
+import com.ledgerpay.repository.WebhookEventRepository;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -46,11 +49,25 @@ class MerchantServiceTest {
     @Mock
     private ApiKeyService apiKeyService;
 
+    @Mock
+    private PaymentRepository paymentRepository;
+
+    @Mock
+    private RefundRepository refundRepository;
+
+    @Mock
+    private WebhookEventRepository webhookEventRepository;
+
     private MerchantService merchantService;
 
     @BeforeEach
     void setUp() {
-        merchantService = new MerchantService(merchantRepository, apiKeyService);
+        merchantService = new MerchantService(
+                merchantRepository,
+                apiKeyService,
+                paymentRepository,
+                refundRepository,
+                webhookEventRepository);
     }
 
     @Test

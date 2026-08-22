@@ -23,6 +23,7 @@ import com.ledgerpay.dto.UpdateMerchantRequest;
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.MerchantStatus;
 import com.ledgerpay.exception.GlobalExceptionHandler;
+import com.ledgerpay.exception.MerchantHasUnfinishedOperationsException;
 import com.ledgerpay.repository.MerchantRepository;
 import com.ledgerpay.security.LedgerPayAuthenticationEntryPoint;
 import com.ledgerpay.security.SecurityConfiguration;
@@ -41,6 +42,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -203,6 +205,50 @@ class MerchantControllerTest {
                 .andExpect(jsonPath("$.apiKeyHash").doesNotExist());
 
         verify(merchantService).rotateApiKey(merchant);
+    }
+
+    @Test
+    void deactivateMerchantReturnsUpdatedMerchantWithoutLocationHeader() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        Instant deactivatedAt = Instant.parse("2026-08-22T12:00:00Z");
+        MerchantResponse response = new MerchantResponse(
+                "mer_" + merchant.getId(),
+                merchant.getName(),
+                merchant.getEmail(),
+                MerchantStatus.INACTIVE,
+                merchant.getWebhookUrl(),
+                deactivatedAt,
+                merchant.getCreatedAt(),
+                UPDATED_AT);
+        authenticate(merchant);
+        when(merchantService.deactivate(merchant)).thenReturn(response);
+
+        mockMvc.perform(post("/api/v1/merchant/deactivate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist(HttpHeaders.LOCATION))
+                .andExpect(jsonPath("$.id").value("mer_" + merchant.getId()))
+                .andExpect(jsonPath("$.status").value("INACTIVE"))
+                .andExpect(jsonPath("$.deactivatedAt").value(deactivatedAt.toString()))
+                .andExpect(jsonPath("$.apiKey").doesNotExist())
+                .andExpect(jsonPath("$.apiKeyHash").doesNotExist());
+
+        verify(merchantService).deactivate(merchant);
+    }
+
+    @Test
+    void deactivateMerchantWithUnfinishedOperationsReturnsConflictContract() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        authenticate(merchant);
+        when(merchantService.deactivate(merchant))
+                .thenThrow(new MerchantHasUnfinishedOperationsException());
+
+        mockMvc.perform(post("/api/v1/merchant/deactivate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("MERCHANT_HAS_UNFINISHED_OPERATIONS"))
+                .andExpect(jsonPath("$.message").value(
+                        "Merchant cannot be deactivated while unfinished operations exist."));
     }
 
     @Test
