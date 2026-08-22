@@ -21,10 +21,13 @@ import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.MerchantOrder;
 import com.ledgerpay.entity.Payment;
 import com.ledgerpay.entity.Refund;
+import com.ledgerpay.entity.RefundFailureCode;
 import com.ledgerpay.entity.RefundReasonCode;
+import com.ledgerpay.entity.RefundSimulationOutcome;
 import com.ledgerpay.exception.GlobalExceptionHandler;
 import com.ledgerpay.exception.PaymentNotFoundException;
 import com.ledgerpay.exception.RefundNotFoundException;
+import com.ledgerpay.exception.RefundInvalidStateException;
 import com.ledgerpay.repository.MerchantRepository;
 import com.ledgerpay.security.LedgerPayAuthenticationEntryPoint;
 import com.ledgerpay.security.SecurityConfiguration;
@@ -315,6 +318,120 @@ class RefundControllerTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
 
         verifyNoInteractions(refundService);
+    }
+
+    @Test
+    void simulateSucceededRefundAcceptsAbsentFailureCode() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        Payment payment = persistedPayment(merchant);
+        Refund refund = persistedRefund(payment);
+        refund.markSucceeded();
+        authenticate(merchant);
+        when(refundService.simulateRefund(
+                        merchant,
+                        refund.getId(),
+                        RefundSimulationOutcome.SUCCEEDED,
+                        null))
+                .thenReturn(refund);
+
+        mockMvc.perform(post("/api/v1/refunds/re_" + refund.getId() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"outcome\":\"SUCCEEDED\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"))
+                .andExpect(jsonPath("$.failureCode").value((Object) null));
+    }
+
+    @Test
+    void simulateSucceededRefundAcceptsExplicitNullFailureCode() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        Payment payment = persistedPayment(merchant);
+        Refund refund = persistedRefund(payment);
+        refund.markSucceeded();
+        authenticate(merchant);
+        when(refundService.simulateRefund(
+                        merchant,
+                        refund.getId(),
+                        RefundSimulationOutcome.SUCCEEDED,
+                        null))
+                .thenReturn(refund);
+
+        mockMvc.perform(post("/api/v1/refunds/re_" + refund.getId() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"outcome\":\"SUCCEEDED\",\"failureCode\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("SUCCEEDED"));
+    }
+
+    @Test
+    void simulateFailedRefundReturnsTerminalFailure() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        Payment payment = persistedPayment(merchant);
+        Refund refund = persistedRefund(payment);
+        refund.markFailed(RefundFailureCode.REFUND_PROCESSING_ERROR);
+        authenticate(merchant);
+        when(refundService.simulateRefund(
+                        merchant,
+                        refund.getId(),
+                        RefundSimulationOutcome.FAILED,
+                        RefundFailureCode.REFUND_PROCESSING_ERROR))
+                .thenReturn(refund);
+
+        mockMvc.perform(post("/api/v1/refunds/re_" + refund.getId() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "outcome":"FAILED",
+                                  "failureCode":"REFUND_PROCESSING_ERROR"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.failureCode").value("REFUND_PROCESSING_ERROR"));
+    }
+
+    @Test
+    void invalidSimulationCombinationIsRejectedBeforeService() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        authenticate(merchant);
+
+        mockMvc.perform(post("/api/v1/refunds/re_" + UUID.randomUUID() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "outcome":"SUCCEEDED",
+                                  "failureCode":"REFUND_PROCESSING_ERROR"
+                                }
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+
+        verifyNoInteractions(refundService);
+    }
+
+    @Test
+    void repeatedSimulationReturnsRefundInvalidState() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        Refund refund = persistedRefund(persistedPayment(merchant));
+        authenticate(merchant);
+        when(refundService.simulateRefund(
+                        merchant,
+                        refund.getId(),
+                        RefundSimulationOutcome.SUCCEEDED,
+                        null))
+                .thenThrow(new RefundInvalidStateException());
+
+        mockMvc.perform(post("/api/v1/refunds/re_" + refund.getId() + "/simulate")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"outcome\":\"SUCCEEDED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("REFUND_INVALID_STATE"))
+                .andExpect(jsonPath("$.message").value("Refund is no longer pending."));
     }
 
     private org.springframework.test.web.servlet.ResultActions performValidCreate(
