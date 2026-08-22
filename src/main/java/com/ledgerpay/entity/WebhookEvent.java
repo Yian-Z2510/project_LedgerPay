@@ -39,9 +39,13 @@ public class WebhookEvent {
     @Column(name = "event_type", nullable = false, updatable = false, length = 50)
     private WebhookEventType eventType;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "payment_id", nullable = false, updatable = false)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "payment_id", updatable = false)
     private Payment payment;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "refund_id", updatable = false)
+    private Refund refund;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "payload", nullable = false, updatable = false, columnDefinition = "jsonb")
@@ -87,12 +91,46 @@ public class WebhookEvent {
             throw new IllegalArgumentException("Webhook event type must not be null.");
         }
 
+        if (eventType != WebhookEventType.PAYMENT_SUCCEEDED
+                && eventType != WebhookEventType.PAYMENT_FAILED) {
+            throw new IllegalArgumentException(
+                    "Payment Webhook event must use a Payment event type.");
+        }
+
         if (payload == null) {
             throw new IllegalArgumentException("Webhook event payload must not be null.");
         }
 
         this.payment = payment;
         this.merchant = payment.getMerchant();
+        this.eventType = eventType;
+        this.payload = payload.deepCopy();
+    }
+
+    public WebhookEvent(
+            Refund refund,
+            WebhookEventType eventType,
+            JsonNode payload) {
+        if (refund == null) {
+            throw new IllegalArgumentException("Webhook event Refund must not be null.");
+        }
+
+        if (eventType == null) {
+            throw new IllegalArgumentException("Webhook event type must not be null.");
+        }
+
+        if (eventType != WebhookEventType.REFUND_SUCCEEDED
+                && eventType != WebhookEventType.REFUND_FAILED) {
+            throw new IllegalArgumentException(
+                    "Refund Webhook event must use a Refund event type.");
+        }
+
+        if (payload == null) {
+            throw new IllegalArgumentException("Webhook event payload must not be null.");
+        }
+
+        this.refund = refund;
+        this.merchant = refund.getMerchant();
         this.eventType = eventType;
         this.payload = payload.deepCopy();
     }
@@ -111,6 +149,10 @@ public class WebhookEvent {
 
     public Payment getPayment() {
         return payment;
+    }
+
+    public Refund getRefund() {
+        return refund;
     }
 
     public JsonNode getPayload() {
