@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.ledgerpay.dto.CreateRefundRequest;
 import com.ledgerpay.dto.RefundResponse;
+import com.ledgerpay.dto.SimulateRefundRequest;
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.Refund;
 import com.ledgerpay.exception.InvalidIdempotencyKeyException;
@@ -83,6 +84,19 @@ public class RefundController {
         }
         return ResponseEntity.created(URI.create(REFUND_LOCATION_PREFIX + response.id()))
                 .body(response);
+    }
+
+    @PostMapping("/refunds/{refundId}/simulate")
+    public RefundResponse simulateRefund(
+            @AuthenticationPrincipal Merchant authenticatedMerchant,
+            @PathVariable String refundId,
+            @Valid @RequestBody SimulateRefundRequest request) {
+        Refund refund = refundService.simulateRefund(
+                authenticatedMerchant,
+                parseRefundId(refundId),
+                request.outcome(),
+                request.failureCode());
+        return RefundResponseMapper.toRefundResponse(refund);
     }
 
     private void validateIdempotencyKey(String idempotencyKey) {

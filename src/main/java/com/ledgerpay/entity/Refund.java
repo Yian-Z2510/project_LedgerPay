@@ -98,6 +98,29 @@ public class Refund {
         this.idempotencyKey = idempotencyKey;
     }
 
+    public void markSucceeded() {
+        requirePendingStatus();
+        this.status = RefundStatus.SUCCEEDED;
+        this.failureCode = null;
+    }
+
+    public void markFailed(RefundFailureCode failureCode) {
+        requirePendingStatus();
+
+        if (failureCode == null) {
+            throw new IllegalArgumentException("Refund failure code must not be null.");
+        }
+
+        this.status = RefundStatus.FAILED;
+        this.failureCode = failureCode;
+    }
+
+    private void requirePendingStatus() {
+        if (status != RefundStatus.PENDING) {
+            throw new IllegalStateException("Only a pending Refund may transition.");
+        }
+    }
+
     public UUID getId() {
         return id;
     }
