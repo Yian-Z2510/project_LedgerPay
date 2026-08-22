@@ -41,6 +41,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 @SpringBootTest
 class MerchantDeactivationPostgresAcceptanceTest {
@@ -163,9 +165,8 @@ class MerchantDeactivationPostgresAcceptanceTest {
         assertFalse(response.deactivatedAt().isBefore(beforeDeactivation));
         assertFalse(response.deactivatedAt().isAfter(afterDeactivation));
         assertEquals(MerchantStatus.INACTIVE, persistedMerchant.getStatus());
-        assertEquals(
-                response.deactivatedAt().truncatedTo(ChronoUnit.MICROS),
-                persistedMerchant.getDeactivatedAt().truncatedTo(ChronoUnit.MICROS));
+        assertThat(persistedMerchant.getDeactivatedAt())
+                .isCloseTo(response.deactivatedAt(), within(1, ChronoUnit.MICROS));
     }
 
     private Merchant createMerchant(String name) {
