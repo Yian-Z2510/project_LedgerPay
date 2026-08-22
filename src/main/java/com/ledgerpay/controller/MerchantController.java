@@ -55,4 +55,10 @@ public class MerchantController {
             @AuthenticationPrincipal Merchant merchant) {
         return merchantService.rotateApiKey(merchant);
     }
+
+    @PostMapping("/merchant/deactivate")
+    public MerchantResponse deactivateMerchant(
+            @AuthenticationPrincipal Merchant merchant) {
+        return merchantService.deactivate(merchant);
+    }
 }
