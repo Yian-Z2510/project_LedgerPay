@@ -13,6 +13,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +27,7 @@ import com.ledgerpay.entity.Refund;
 import com.ledgerpay.entity.RefundReasonCode;
 import com.ledgerpay.entity.WebhookEvent;
 import com.ledgerpay.entity.WebhookEventType;
+import com.ledgerpay.entity.WebhookFailureCode;
 import com.ledgerpay.entity.WebhookStatus;
 
 import jakarta.persistence.EntityManager;
@@ -87,6 +89,108 @@ class WebhookEventRepositoryTest {
         assertTrue(webhookEventRepository.findByIdAndMerchantId(
                 event.getId(),
                 otherMerchant.getId()).isEmpty());
+        assertEquals(
+                owner.getId(),
+                webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                                event.getId(),
+                                owner.getId())
+                        .orElseThrow()
+                        .getMerchant()
+                        .getId());
+        assertTrue(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                event.getId(),
+                otherMerchant.getId()).isEmpty());
+    }
+
+    @Test
+    void findsOnlyDuePendingEventsInCreatedAtOrder() throws Exception {
+        Merchant merchant = persistMerchant("Due Event Merchant");
+        WebhookEvent newerInitialEvent = webhookEventRepository.saveAndFlush(new WebhookEvent(
+                persistSucceededPayment(merchant, "due-initial-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{}")));
+        WebhookEvent olderRetryEvent = webhookEventRepository.saveAndFlush(new WebhookEvent(
+                persistSucceededPayment(merchant, "due-retry-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{}")));
+        olderRetryEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT,
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        webhookEventRepository.saveAndFlush(olderRetryEvent);
+
+        WebhookEvent tooRecentEvent = webhookEventRepository.saveAndFlush(new WebhookEvent(
+                persistSucceededPayment(merchant, "not-due-retry-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{}")));
+        tooRecentEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(1),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        webhookEventRepository.saveAndFlush(tooRecentEvent);
+
+        WebhookEvent deliveredEvent = webhookEventRepository.saveAndFlush(new WebhookEvent(
+                persistSucceededPayment(merchant, "not-due-delivered-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{}")));
+        deliveredEvent.recordAutomaticDeliverySucceeded(
+                COMPLETED_AT.minusSeconds(10),
+                COMPLETED_AT.minusSeconds(9));
+        webhookEventRepository.saveAndFlush(deliveredEvent);
+
+        Payment defensivePayment = persistSucceededPayment(
+                merchant,
+                "not-due-defensive-max-payment");
+        UUID defensiveMaxEventId = insertWebhookEvent(
+                merchant.getId(),
+                defensivePayment.getId(),
+                "PENDING",
+                3,
+                COMPLETED_AT.minusSeconds(60),
+                null,
+                "HTTP_ERROR");
+        jdbcTemplate.update(
+                "UPDATE webhook_event SET created_at = ? WHERE id = ?",
+                Timestamp.from(COMPLETED_AT.minusSeconds(30)),
+                olderRetryEvent.getId());
+        jdbcTemplate.update(
+                "UPDATE webhook_event SET created_at = ? WHERE id = ?",
+                Timestamp.from(COMPLETED_AT.minusSeconds(20)),
+                newerInitialEvent.getId());
+        entityManager.flush();
+        entityManager.clear();
+
+        List<UUID> dueEventIds = webhookEventRepository.findDueEventIds(
+                WebhookStatus.PENDING,
+                3,
+                COMPLETED_AT,
+                PageRequest.of(0, 50));
+
+        assertEquals(
+                List.of(olderRetryEvent.getId(), newerInitialEvent.getId()),
+                dueEventIds);
+        assertTrue(!dueEventIds.contains(tooRecentEvent.getId()));
+        assertTrue(!dueEventIds.contains(deliveredEvent.getId()));
+        assertTrue(!dueEventIds.contains(defensiveMaxEventId));
+    }
+
+    @Test
+    void dueEventQueryLimitsEachPollingBatchToFifty() throws Exception {
+        Merchant merchant = persistMerchant("Due Batch Merchant");
+        for (int index = 0; index < 51; index++) {
+            webhookEventRepository.saveAndFlush(new WebhookEvent(
+                    persistSucceededPayment(merchant, "due-batch-payment-" + index),
+                    WebhookEventType.PAYMENT_SUCCEEDED,
+                    objectMapper.readTree("{}")));
+        }
+
+        List<UUID> dueEventIds = webhookEventRepository.findDueEventIds(
+                WebhookStatus.PENDING,
+                3,
+                COMPLETED_AT,
+                PageRequest.of(0, 50));
+
+        assertEquals(50, dueEventIds.size());
     }
 
     @Test
@@ -409,6 +513,130 @@ class WebhookEventRepositoryTest {
                         lastFailureCode));
     }
 
+    @Test
+    void persistsFeatureTwoDeliveryLifecycleStates() throws Exception {
+        Merchant merchant = persistMerchant("Delivery Lifecycle Merchant");
+        WebhookEvent deliveredEvent = new WebhookEvent(
+                persistSucceededPayment(merchant, "delivered-lifecycle-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{\"payment\":{\"status\":\"SUCCEEDED\"}}"));
+        deliveredEvent.recordAutomaticDeliverySucceeded(
+                COMPLETED_AT.plusSeconds(10),
+                COMPLETED_AT.plusSeconds(12));
+        webhookEventRepository.saveAndFlush(deliveredEvent);
+
+        WebhookEvent requestFailedEvent = new WebhookEvent(
+                persistFailedPayment(merchant, "failed-request-lifecycle-payment"),
+                WebhookEventType.PAYMENT_FAILED,
+                objectMapper.readTree("{\"payment\":{\"status\":\"FAILED\"}}"));
+        requestFailedEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(20),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        webhookEventRepository.saveAndFlush(requestFailedEvent);
+
+        WebhookEvent missingUrlEvent = new WebhookEvent(
+                persistSucceededPayment(merchant, "missing-url-lifecycle-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{\"payment\":{\"status\":\"SUCCEEDED\"}}"));
+        missingUrlEvent.markWebhookUrlNotConfigured();
+        webhookEventRepository.saveAndFlush(missingUrlEvent);
+        UUID deliveredEventId = deliveredEvent.getId();
+        UUID requestFailedEventId = requestFailedEvent.getId();
+        UUID missingUrlEventId = missingUrlEvent.getId();
+        entityManager.clear();
+
+        WebhookEvent reloadedDelivered = webhookEventRepository.findById(deliveredEventId)
+                .orElseThrow();
+        WebhookEvent reloadedRequestFailed = webhookEventRepository.findById(
+                        requestFailedEventId)
+                .orElseThrow();
+        WebhookEvent reloadedMissingUrl = webhookEventRepository.findById(missingUrlEventId)
+                .orElseThrow();
+
+        assertEquals(WebhookStatus.DELIVERED, reloadedDelivered.getStatus());
+        assertEquals(1, reloadedDelivered.getAttemptCount());
+        assertNotNull(reloadedDelivered.getLastAttemptAt());
+        assertNotNull(reloadedDelivered.getDeliveredAt());
+        assertEquals(WebhookStatus.PENDING, reloadedRequestFailed.getStatus());
+        assertEquals(1, reloadedRequestFailed.getAttemptCount());
+        assertEquals(
+                WebhookFailureCode.HTTP_ERROR,
+                reloadedRequestFailed.getLastFailureCode());
+        assertEquals(WebhookStatus.FAILED, reloadedMissingUrl.getStatus());
+        assertEquals(0, reloadedMissingUrl.getAttemptCount());
+        assertNull(reloadedMissingUrl.getLastAttemptAt());
+        assertEquals(
+                WebhookFailureCode.WEBHOOK_URL_NOT_CONFIGURED,
+                reloadedMissingUrl.getLastFailureCode());
+    }
+
+    @Test
+    void persistsExhaustedAndManualRetryLifecycleStates() throws Exception {
+        Merchant merchant = persistMerchant("Retry Lifecycle Merchant");
+        WebhookEvent manualFailureEvent = new WebhookEvent(
+                persistSucceededPayment(merchant, "manual-failure-lifecycle-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{}"));
+        manualFailureEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(1),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        manualFailureEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(2),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        manualFailureEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(3),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        manualFailureEvent.recordManualDeliveryFailed(
+                COMPLETED_AT.plusSeconds(4),
+                WebhookFailureCode.CONNECTION_TIMEOUT);
+        webhookEventRepository.saveAndFlush(manualFailureEvent);
+
+        WebhookEvent manualSuccessEvent = new WebhookEvent(
+                persistSucceededPayment(merchant, "manual-success-lifecycle-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{}"));
+        manualSuccessEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(1),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        manualSuccessEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(2),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        manualSuccessEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(3),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        manualSuccessEvent.recordManualDeliverySucceeded(
+                COMPLETED_AT.plusSeconds(4),
+                COMPLETED_AT.plusSeconds(5));
+        webhookEventRepository.saveAndFlush(manualSuccessEvent);
+        UUID manualFailureEventId = manualFailureEvent.getId();
+        UUID manualSuccessEventId = manualSuccessEvent.getId();
+        entityManager.clear();
+
+        WebhookEvent reloadedFailure = webhookEventRepository.findById(
+                        manualFailureEventId)
+                .orElseThrow();
+        WebhookEvent reloadedSuccess = webhookEventRepository.findById(
+                        manualSuccessEventId)
+                .orElseThrow();
+        assertEquals(WebhookStatus.FAILED, reloadedFailure.getStatus());
+        assertEquals(4, reloadedFailure.getAttemptCount());
+        assertEquals(
+                WebhookFailureCode.CONNECTION_TIMEOUT,
+                reloadedFailure.getLastFailureCode());
+        assertNull(reloadedFailure.getDeliveredAt());
+        assertEquals(WebhookStatus.DELIVERED, reloadedSuccess.getStatus());
+        assertEquals(4, reloadedSuccess.getAttemptCount());
+        assertNotNull(reloadedSuccess.getDeliveredAt());
+        assertEquals(WebhookFailureCode.HTTP_ERROR, reloadedSuccess.getLastFailureCode());
+    }
+
     private static Stream<Arguments> invalidLifecycleStates() {
         Instant attemptedAt = Instant.parse("2026-08-18T12:05:00Z");
         Instant deliveredAt = Instant.parse("2026-08-18T12:06:00Z");
@@ -462,7 +690,7 @@ class WebhookEventRepositoryTest {
         return orderRepository.saveAndFlush(order);
     }
 
-    private void insertWebhookEvent(
+    private UUID insertWebhookEvent(
             UUID merchantId,
             UUID paymentId,
             String status,
@@ -470,6 +698,7 @@ class WebhookEventRepositoryTest {
             Instant lastAttemptAt,
             Instant deliveredAt,
             String lastFailureCode) {
+        UUID eventId = UUID.randomUUID();
         jdbcTemplate.update(
                 """
                 INSERT INTO webhook_event (
@@ -486,7 +715,7 @@ class WebhookEventRepositoryTest {
                 )
                 VALUES (?, ?, ?, ?, CAST(? AS JSONB), ?, ?, ?, ?, ?)
                 """,
-                UUID.randomUUID(),
+                eventId,
                 merchantId,
                 "PAYMENT_SUCCEEDED",
                 paymentId,
@@ -496,6 +725,7 @@ class WebhookEventRepositoryTest {
                 lastAttemptAt == null ? null : Timestamp.from(lastAttemptAt),
                 deliveredAt == null ? null : Timestamp.from(deliveredAt),
                 lastFailureCode);
+        return eventId;
     }
 
     private void insertSourcedWebhookEvent(
