@@ -81,9 +81,9 @@ public class JdkWebhookHttpClient implements WebhookHttpClient {
                     WebhookFailureCode.CONNECTION_TIMEOUT);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
-            return WebhookDeliveryResult.requestFailed(
-                    attemptStartedAt,
-                    WebhookFailureCode.PROCESSING_ERROR);
+            throw new IllegalStateException(
+                    "Webhook HTTP delivery was interrupted.",
+                    exception);
         }
     }
 }

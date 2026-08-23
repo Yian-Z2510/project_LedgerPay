@@ -637,6 +637,42 @@ class WebhookEventRepositoryTest {
         assertEquals(WebhookFailureCode.HTTP_ERROR, reloadedSuccess.getLastFailureCode());
     }
 
+    @Test
+    void persistsTerminalPreHttpFailuresAfterEarlierActualAttempts() throws Exception {
+        Merchant merchant = persistMerchant("Historical Terminal Failure Merchant");
+        WebhookEvent processingFailureEvent = new WebhookEvent(
+                persistSucceededPayment(merchant, "historical-processing-failure-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{}"));
+        processingFailureEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(1),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        processingFailureEvent.recordProcessingFailure();
+
+        WebhookEvent missingUrlEvent = new WebhookEvent(
+                persistSucceededPayment(merchant, "historical-missing-url-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{}"));
+        missingUrlEvent.recordAutomaticDeliveryFailed(
+                COMPLETED_AT.plusSeconds(1),
+                WebhookFailureCode.CONNECTION_TIMEOUT,
+                3);
+        missingUrlEvent.markWebhookUrlNotConfigured();
+
+        webhookEventRepository.saveAndFlush(processingFailureEvent);
+        webhookEventRepository.saveAndFlush(missingUrlEvent);
+
+        assertEquals(1, processingFailureEvent.getAttemptCount());
+        assertEquals(
+                WebhookFailureCode.PROCESSING_ERROR,
+                processingFailureEvent.getLastFailureCode());
+        assertEquals(1, missingUrlEvent.getAttemptCount());
+        assertEquals(
+                WebhookFailureCode.WEBHOOK_URL_NOT_CONFIGURED,
+                missingUrlEvent.getLastFailureCode());
+    }
+
     private static Stream<Arguments> invalidLifecycleStates() {
         Instant attemptedAt = Instant.parse("2026-08-18T12:05:00Z");
         Instant deliveredAt = Instant.parse("2026-08-18T12:06:00Z");
@@ -645,7 +681,18 @@ class WebhookEventRepositoryTest {
                 Arguments.of("PENDING", 1, null, null, null),
                 Arguments.of("PENDING", 0, null, deliveredAt, null),
                 Arguments.of("DELIVERED", 1, attemptedAt, null, null),
-                Arguments.of("FAILED", 0, null, null, null));
+                Arguments.of("FAILED", 0, null, null, null),
+                Arguments.of("DELIVERED", 0, null, deliveredAt, null),
+                Arguments.of("PENDING", 0, null, null, "HTTP_ERROR"),
+                Arguments.of("PENDING", 1, attemptedAt, null, "PROCESSING_ERROR"),
+                Arguments.of(
+                        "PENDING",
+                        1,
+                        attemptedAt,
+                        null,
+                        "WEBHOOK_URL_NOT_CONFIGURED"),
+                Arguments.of("FAILED", 0, null, null, "HTTP_ERROR"),
+                Arguments.of("FAILED", 0, null, null, "CONNECTION_TIMEOUT"));
     }
 
     private static Stream<Arguments> invalidEventTypeSources() {
@@ -677,11 +724,13 @@ class WebhookEventRepositoryTest {
     }
 
     private Refund persistRefund(Payment payment, String idempotencyKey) {
-        return refundRepository.saveAndFlush(new Refund(
+        Refund refund = new Refund(
                 payment,
                 300L,
                 RefundReasonCode.CUSTOMER_REQUEST,
-                idempotencyKey));
+                idempotencyKey);
+        refund.markSucceeded();
+        return refundRepository.saveAndFlush(refund);
     }
 
     private MerchantOrder persistPaymentPendingOrder(Merchant merchant) {

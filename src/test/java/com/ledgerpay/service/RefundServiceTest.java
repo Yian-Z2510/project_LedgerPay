@@ -276,6 +276,7 @@ class RefundServiceTest {
 
         verify(refundRepository, never()).saveAndFlush(any(Refund.class));
         verifyNoInteractions(paymentRefundSummaryRepository);
+        verifyNoInteractions(webhookEventRepository);
     }
 
     @Test
