@@ -26,6 +26,7 @@ import com.ledgerpay.entity.Refund;
 import com.ledgerpay.entity.RefundReasonCode;
 import com.ledgerpay.entity.WebhookEvent;
 import com.ledgerpay.entity.WebhookEventType;
+import com.ledgerpay.entity.WebhookFailureCode;
 import com.ledgerpay.entity.WebhookStatus;
 
 import jakarta.persistence.EntityManager;
@@ -407,6 +408,63 @@ class WebhookEventRepositoryTest {
                         lastAttemptAt,
                         deliveredAt,
                         lastFailureCode));
+    }
+
+    @Test
+    void persistsFeatureTwoDeliveryLifecycleStates() throws Exception {
+        Merchant merchant = persistMerchant("Delivery Lifecycle Merchant");
+        WebhookEvent deliveredEvent = new WebhookEvent(
+                persistSucceededPayment(merchant, "delivered-lifecycle-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{\"payment\":{\"status\":\"SUCCEEDED\"}}"));
+        deliveredEvent.recordDeliverySucceeded(
+                COMPLETED_AT.plusSeconds(10),
+                COMPLETED_AT.plusSeconds(12));
+        webhookEventRepository.saveAndFlush(deliveredEvent);
+
+        WebhookEvent requestFailedEvent = new WebhookEvent(
+                persistFailedPayment(merchant, "failed-request-lifecycle-payment"),
+                WebhookEventType.PAYMENT_FAILED,
+                objectMapper.readTree("{\"payment\":{\"status\":\"FAILED\"}}"));
+        requestFailedEvent.recordDeliveryFailed(
+                COMPLETED_AT.plusSeconds(20),
+                WebhookFailureCode.HTTP_ERROR);
+        webhookEventRepository.saveAndFlush(requestFailedEvent);
+
+        WebhookEvent missingUrlEvent = new WebhookEvent(
+                persistSucceededPayment(merchant, "missing-url-lifecycle-payment"),
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{\"payment\":{\"status\":\"SUCCEEDED\"}}"));
+        missingUrlEvent.markWebhookUrlNotConfigured();
+        webhookEventRepository.saveAndFlush(missingUrlEvent);
+        UUID deliveredEventId = deliveredEvent.getId();
+        UUID requestFailedEventId = requestFailedEvent.getId();
+        UUID missingUrlEventId = missingUrlEvent.getId();
+        entityManager.clear();
+
+        WebhookEvent reloadedDelivered = webhookEventRepository.findById(deliveredEventId)
+                .orElseThrow();
+        WebhookEvent reloadedRequestFailed = webhookEventRepository.findById(
+                        requestFailedEventId)
+                .orElseThrow();
+        WebhookEvent reloadedMissingUrl = webhookEventRepository.findById(missingUrlEventId)
+                .orElseThrow();
+
+        assertEquals(WebhookStatus.DELIVERED, reloadedDelivered.getStatus());
+        assertEquals(1, reloadedDelivered.getAttemptCount());
+        assertNotNull(reloadedDelivered.getLastAttemptAt());
+        assertNotNull(reloadedDelivered.getDeliveredAt());
+        assertEquals(WebhookStatus.PENDING, reloadedRequestFailed.getStatus());
+        assertEquals(1, reloadedRequestFailed.getAttemptCount());
+        assertEquals(
+                WebhookFailureCode.HTTP_ERROR,
+                reloadedRequestFailed.getLastFailureCode());
+        assertEquals(WebhookStatus.FAILED, reloadedMissingUrl.getStatus());
+        assertEquals(0, reloadedMissingUrl.getAttemptCount());
+        assertNull(reloadedMissingUrl.getLastAttemptAt());
+        assertEquals(
+                WebhookFailureCode.WEBHOOK_URL_NOT_CONFIGURED,
+                reloadedMissingUrl.getLastFailureCode());
     }
 
     private static Stream<Arguments> invalidLifecycleStates() {

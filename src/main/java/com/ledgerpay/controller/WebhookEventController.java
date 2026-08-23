@@ -10,9 +10,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.ledgerpay.dto.WebhookEventResponse;
+import com.ledgerpay.dto.WebhookEventTypeMapper;
 import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.WebhookEvent;
-import com.ledgerpay.entity.WebhookEventType;
 import com.ledgerpay.exception.InvalidPaymentIdException;
 import com.ledgerpay.exception.InvalidWebhookEventIdException;
 import com.ledgerpay.service.WebhookEventService;
@@ -55,7 +55,7 @@ public class WebhookEventController {
     private WebhookEventResponse toWebhookEventResponse(WebhookEvent event) {
         return new WebhookEventResponse(
                 EVENT_ID_PREFIX + event.getId(),
-                toPublicEventType(event.getEventType()),
+                WebhookEventTypeMapper.toPublicName(event.getEventType()),
                 event.getStatus(),
                 event.getAttemptCount(),
                 event.getLastAttemptAt(),
@@ -63,15 +63,6 @@ public class WebhookEventController {
                 event.getLastFailureCode(),
                 event.getCreatedAt(),
                 event.getPayload());
-    }
-
-    private String toPublicEventType(WebhookEventType eventType) {
-        return switch (eventType) {
-            case PAYMENT_SUCCEEDED -> "payment.succeeded";
-            case PAYMENT_FAILED -> "payment.failed";
-            case REFUND_SUCCEEDED -> "refund.succeeded";
-            case REFUND_FAILED -> "refund.failed";
-        };
     }
 
     private UUID parseEventId(String eventId) {

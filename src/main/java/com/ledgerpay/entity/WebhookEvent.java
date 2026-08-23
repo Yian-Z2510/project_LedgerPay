@@ -186,4 +186,63 @@ public class WebhookEvent {
     public Instant getUpdatedAt() {
         return updatedAt;
     }
+
+    public void recordDeliverySucceeded(
+            Instant attemptStartedAt,
+            Instant deliveredAt) {
+        requirePendingStatus();
+        requireAttemptStartedAt(attemptStartedAt);
+        if (deliveredAt == null || deliveredAt.isBefore(attemptStartedAt)) {
+            throw new IllegalArgumentException(
+                    "Webhook delivery completion time must not be before its attempt time.");
+        }
+
+        this.attemptCount += 1;
+        this.lastAttemptAt = attemptStartedAt;
+        this.status = WebhookStatus.DELIVERED;
+        this.deliveredAt = deliveredAt;
+    }
+
+    public void recordDeliveryFailed(
+            Instant attemptStartedAt,
+            WebhookFailureCode failureCode) {
+        requirePendingStatus();
+        requireAttemptStartedAt(attemptStartedAt);
+        if (failureCode != WebhookFailureCode.CONNECTION_TIMEOUT
+                && failureCode != WebhookFailureCode.HTTP_ERROR
+                && failureCode != WebhookFailureCode.PROCESSING_ERROR) {
+            throw new IllegalArgumentException(
+                    "Actual Webhook delivery failure code is invalid.");
+        }
+
+        this.attemptCount += 1;
+        this.lastAttemptAt = attemptStartedAt;
+        this.lastFailureCode = failureCode;
+    }
+
+    public void recordProcessingFailure() {
+        requirePendingStatus();
+        this.lastFailureCode = WebhookFailureCode.PROCESSING_ERROR;
+    }
+
+    public void markWebhookUrlNotConfigured() {
+        requirePendingStatus();
+        this.status = WebhookStatus.FAILED;
+        this.deliveredAt = null;
+        this.lastFailureCode = WebhookFailureCode.WEBHOOK_URL_NOT_CONFIGURED;
+    }
+
+    private void requirePendingStatus() {
+        if (status != WebhookStatus.PENDING) {
+            throw new IllegalStateException(
+                    "Only a pending Webhook event may record an automatic delivery outcome.");
+        }
+    }
+
+    private void requireAttemptStartedAt(Instant attemptStartedAt) {
+        if (attemptStartedAt == null) {
+            throw new IllegalArgumentException(
+                    "Webhook delivery attempt time must not be null.");
+        }
+    }
 }

@@ -18,6 +18,14 @@ public interface WebhookEventRepository extends JpaRepository<WebhookEvent, UUID
     @Query("""
             SELECT event
             FROM WebhookEvent event
+            JOIN FETCH event.merchant
+            WHERE event.id = :eventId
+            """)
+    Optional<WebhookEvent> findForDeliveryById(@Param("eventId") UUID eventId);
+
+    @Query("""
+            SELECT event
+            FROM WebhookEvent event
             LEFT JOIN event.payment payment
             LEFT JOIN event.refund refund
             LEFT JOIN refund.payment refundPayment
