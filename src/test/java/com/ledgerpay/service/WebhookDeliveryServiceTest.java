@@ -280,6 +280,36 @@ class WebhookDeliveryServiceTest {
     }
 
     @Test
+    void manualPersistenceFailureAfterRemoteSuccessPropagatesWithoutRelabelingOutcome() {
+        WebhookEvent event = automaticallyExhaustedEvent(
+                WEBHOOK_URL,
+                objectMapper.createObjectNode());
+        Merchant merchant = event.getMerchant();
+        DataAccessResourceFailureException persistenceFailure =
+                new DataAccessResourceFailureException("database unavailable");
+        when(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                        event.getId(),
+                        merchant.getId()))
+                .thenReturn(Optional.of(event));
+        when(webhookHttpClient.post(
+                        org.mockito.ArgumentMatchers.eq(WEBHOOK_URL),
+                        org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class)))
+                .thenReturn(WebhookDeliveryResult.succeeded(
+                        ATTEMPT_STARTED_AT,
+                        COMPLETED_AT));
+        when(webhookEventRepository.save(event)).thenThrow(persistenceFailure);
+
+        DataAccessResourceFailureException thrown = assertThrows(
+                DataAccessResourceFailureException.class,
+                () -> webhookDeliveryService.retry(merchant, event.getId()));
+
+        assertSame(persistenceFailure, thrown);
+        assertEquals(WebhookStatus.DELIVERED, event.getStatus());
+        assertEquals(4, event.getAttemptCount());
+        assertEquals(WebhookFailureCode.HTTP_ERROR, event.getLastFailureCode());
+    }
+
+    @Test
     void thirdAutomaticFailureExhaustsDeliveryAttempts() {
         WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
         event.recordAutomaticDeliveryFailed(
@@ -527,6 +557,7 @@ class WebhookDeliveryServiceTest {
         ReflectionTestUtils.setField(order, "id", UUID.randomUUID());
         Payment payment = new Payment(order, UUID.randomUUID().toString());
         ReflectionTestUtils.setField(payment, "id", UUID.randomUUID());
+        payment.markSucceeded(CREATED_AT.minusSeconds(1));
         WebhookEvent event = new WebhookEvent(
                 payment,
                 WebhookEventType.PAYMENT_SUCCEEDED,

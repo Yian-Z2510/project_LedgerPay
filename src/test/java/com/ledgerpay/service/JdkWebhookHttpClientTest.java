@@ -30,6 +30,7 @@ import tools.jackson.databind.ObjectMapper;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JdkWebhookHttpClientTest {
@@ -168,6 +169,29 @@ class JdkWebhookHttpClientTest {
         assertTrue(result.attempted());
         assertFalse(result.successful());
         assertEquals(WebhookFailureCode.CONNECTION_TIMEOUT, result.failureCode());
+    }
+
+    @Test
+    void interruptedSendRestoresFlagAndPropagatesWithoutReturningDeliveryResult()
+            throws Exception {
+        startServer(exchange -> {
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        JdkWebhookHttpClient client = client(Duration.ofSeconds(2));
+
+        try {
+            Thread.currentThread().interrupt();
+
+            IllegalStateException thrown = assertThrows(
+                    IllegalStateException.class,
+                    () -> client.post(serverUrl("/webhook"), request()));
+
+            assertTrue(Thread.currentThread().isInterrupted());
+            assertTrue(thrown.getCause() instanceof InterruptedException);
+        } finally {
+            Thread.interrupted();
+        }
     }
 
     private JdkWebhookHttpClient client(Duration timeout) {

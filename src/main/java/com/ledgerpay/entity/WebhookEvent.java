@@ -97,6 +97,14 @@ public class WebhookEvent {
                     "Payment Webhook event must use a Payment event type.");
         }
 
+        if ((eventType == WebhookEventType.PAYMENT_SUCCEEDED
+                        && payment.getStatus() != PaymentStatus.SUCCEEDED)
+                || (eventType == WebhookEventType.PAYMENT_FAILED
+                        && payment.getStatus() != PaymentStatus.FAILED)) {
+            throw new IllegalArgumentException(
+                    "Payment Webhook event type must match the Payment status.");
+        }
+
         if (payload == null) {
             throw new IllegalArgumentException("Webhook event payload must not be null.");
         }
@@ -123,6 +131,14 @@ public class WebhookEvent {
                 && eventType != WebhookEventType.REFUND_FAILED) {
             throw new IllegalArgumentException(
                     "Refund Webhook event must use a Refund event type.");
+        }
+
+        if ((eventType == WebhookEventType.REFUND_SUCCEEDED
+                        && refund.getStatus() != RefundStatus.SUCCEEDED)
+                || (eventType == WebhookEventType.REFUND_FAILED
+                        && refund.getStatus() != RefundStatus.FAILED)) {
+            throw new IllegalArgumentException(
+                    "Refund Webhook event type must match the Refund status.");
         }
 
         if (payload == null) {
@@ -288,8 +304,7 @@ public class WebhookEvent {
 
     private void requireActualDeliveryFailureCode(WebhookFailureCode failureCode) {
         if (failureCode != WebhookFailureCode.CONNECTION_TIMEOUT
-                && failureCode != WebhookFailureCode.HTTP_ERROR
-                && failureCode != WebhookFailureCode.PROCESSING_ERROR) {
+                && failureCode != WebhookFailureCode.HTTP_ERROR) {
             throw new IllegalArgumentException(
                     "Actual Webhook delivery failure code is invalid.");
         }
