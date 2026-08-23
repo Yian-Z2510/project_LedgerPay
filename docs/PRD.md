@@ -56,7 +56,6 @@ Developers checking that the system behaved correctly. They need to:
 | Currency        | `EUR` only; no currency exchange or conversion                                             |
 | Idempotency     | Client keys are scoped by Merchant so retries are safe without cross-Merchant conflicts   |
 | Authentication  | Merchants authenticate with API keys; end-user accounts and login are not included         |
-| Payment method  | Optional label (e.g. `card`); not validated against real cards                             |
 
 
 ## Simulation Model
@@ -164,8 +163,11 @@ When a payment or refund reaches a meaningful end state, the system emits a webh
 - A terminal Refund snapshot contains `id`, `paymentId`, `amount`, `currency`,
   `reasonCode`, `status`, and `failureCode`.
 - The WebhookEvent row is durably persisted in the same business database
-  transaction. External HTTP delivery occurs outside that transaction and is
-  not yet implemented.
+  transaction. External HTTP delivery occurs outside that transaction.
+- A polling worker performs real HTTP delivery with at most three automatic
+  attempts separated by a fixed 30-second retry interval.
+- Failed events can be retried manually after the Merchant fixes its current
+  webhook destination.
 
 ## MVP Scope
 
@@ -185,8 +187,10 @@ When a payment or refund reaches a meaningful end state, the system emits a webh
 ### Webhooks
 
 - Emit events on payment and refund status changes
-- Store events for lookup
-- Persist Payment and Refund terminal events for later delivery
+- Persist immutable Payment and Refund event snapshots durably
+- Query an owned event or the complete event history for a Payment
+- Deliver events through real HTTP requests
+- Retry failed automatic attempts and support manual retry of terminal failures
 
 ### Merchant
 
@@ -196,7 +200,7 @@ When a payment or refund reaches a meaningful end state, the system emits a webh
 ### Non-functional
 
 - Basic API documentation
-- Unit tests for core business logic
+- Unit, MVC, PostgreSQL integration, concurrency, rollback, and lifecycle acceptance tests
 
 ## Out of Scope
 
@@ -209,7 +213,7 @@ This MVP does not include:
 - Production-level security (signed webhooks, rate limits, etc.)
 - Multiple currencies, currency exchange, or conversion
 - Complex risk or fraud engine
-- Webhook retries, chargebacks, or payment search/list APIs
+- Chargebacks or Merchant-level payment search/list APIs
 
 ## Glossary
 

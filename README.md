@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-LedgerPay is a backend payment gateway simulator built to practise REST API design, relational database design, transaction management, idempotency, concurrency control, webhook delivery, and testing. The project is currently under active development.
+LedgerPay is a feature-complete v1 backend payment gateway simulator built to practise REST API design, relational database design, transaction management, idempotency, concurrency control, webhook delivery, and testing.
 
 ## Current Status
 
@@ -18,24 +18,24 @@ The following functionality is currently implemented:
 - Merchant-scoped Payment creation, retrieval, Order history, and manual simulation
 - Payment idempotency with current-representation replay and PostgreSQL race protection
 - Order-row pessimistic locking across Payment creation and Order mutations
-- Durable `PAYMENT_SUCCEEDED` and `PAYMENT_FAILED` WebhookEvent persistence
 - Refund persistence, merchant-scoped create/query/history APIs, and historical idempotency replay
 - Refund `PENDING` capacity reservation and Payment-row concurrency protection during creation
 - Manual Refund simulation to `SUCCEEDED` or `FAILED`, with Payment refund accounting and Order `PARTIALLY_REFUNDED` / `REFUNDED` transitions
-- Durable `REFUND_SUCCEEDED` and `REFUND_FAILED` WebhookEvent persistence
+- Transactional Payment and Refund terminal transitions with durable immutable `WebhookEvent` snapshots
+- Merchant-scoped WebhookEvent query and Payment history APIs
+- Real HTTP webhook delivery with stable event envelopes, automatic retry, and synchronous manual retry
+- PostgreSQL ownership, lifecycle, idempotency, and partial-uniqueness constraints
 - Merchant soft-deactivation with unfinished Payment, Refund, and WebhookEvent checks
 - Validation and consistent API error responses across the implemented modules
-- Focused unit, MVC, persistence, security, integration, concurrency, and lifecycle tests
+- Focused unit, MVC, persistence, security, PostgreSQL integration, concurrency, rollback, and full-lifecycle acceptance tests
 
-## Remaining Planned V1 Scope
+## V1 Limitations
 
-The remaining planned v1 implementation includes:
-
-- Webhook HTTP delivery and retry processing
-- Validation and consistent error responses for the remaining delivery APIs
-
-WebhookEvent records are already created durably with Payment and Refund terminal
-transitions; only their external HTTP delivery and retry processing remain deferred.
+The v1 backend intentionally uses one polling Webhook worker and at-least-once
+delivery. It does not add multi-worker claiming or fully serialize concurrent
+simulation, manual retry, and already-in-flight Merchant deactivation races.
+See the [API Design](docs/api_design.md) and [V2 Backlog](docs/v2_backlog.md) for
+the detailed boundaries and deferred hardening work.
 
 ## Tech Stack
 
@@ -186,6 +186,9 @@ direnv exec . ./mvnw test
 | GET | `/api/v1/refunds/{refundId}` | Get an owned Refund | `RefundResponse` |
 | GET | `/api/v1/payments/{paymentId}/refunds` | List Refund history newest first | `RefundResponse[]` |
 | POST | `/api/v1/refunds/{refundId}/simulate` | Simulate a terminal Refund outcome | `RefundResponse` |
+| GET | `/api/v1/webhook-events/{eventId}` | Get an owned WebhookEvent | `WebhookEventResponse` |
+| GET | `/api/v1/payments/{paymentId}/webhook-events` | List Payment and Refund WebhookEvents | `WebhookEventResponse[]` |
+| POST | `/api/v1/webhook-events/{eventId}/retry` | Manually retry a failed WebhookEvent | `WebhookEventResponse` |
 
 ## Project Structure
 
