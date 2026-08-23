@@ -10,9 +10,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import com.ledgerpay.dto.ApiErrorResponse;
 
@@ -40,6 +43,8 @@ public class GlobalExceptionHandler {
     private static final String REFUND_INVALID_STATE = "REFUND_INVALID_STATE";
     private static final String ORDER_ALREADY_PAID = "ORDER_ALREADY_PAID";
     private static final String ORDER_INVALID_STATE = "ORDER_INVALID_STATE";
+    private static final String ENDPOINT_NOT_FOUND = "ENDPOINT_NOT_FOUND";
+    private static final String METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED";
     private static final String INTERNAL_ERROR = "INTERNAL_ERROR";
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -255,6 +260,33 @@ public class GlobalExceptionHandler {
                 .body(new ApiErrorResponse(
                         ORDER_INVALID_STATE,
                         exception.getMessage()));
+    }
+
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleEndpointNotFound(
+            NoResourceFoundException exception) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse(
+                        ENDPOINT_NOT_FOUND,
+                        "The requested endpoint was not found."));
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiErrorResponse> handleMethodNotAllowed(
+            HttpRequestMethodNotSupportedException exception) {
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED)
+                .headers(exception.getHeaders())
+                .body(new ApiErrorResponse(
+                        METHOD_NOT_ALLOWED,
+                        "The requested HTTP method is not allowed for this endpoint."));
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<Void> handleUnsupportedMediaType(
+            HttpMediaTypeNotSupportedException exception) {
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+                .headers(exception.getHeaders())
+                .build();
     }
 
     @ExceptionHandler(Exception.class)

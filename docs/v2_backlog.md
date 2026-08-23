@@ -1,7 +1,7 @@
 # LedgerPay V2 Optimization Backlog
 
 **Status:** Prioritized future-work backlog  
-**Related document:** `ledgerpay_api_design.md`
+**Related document:** [`api_design.md`](api_design.md)
 
 ---
 
@@ -231,6 +231,30 @@ Manual retry and Merchant configuration updates can trigger recovery checks.
 - prevents one Merchant from monopolizing workers;
 - reduces unnecessary network traffic;
 - improves multi-tenant fairness.
+
+---
+
+## 2.8 Merchant Deactivation and In-Flight Mutation Serialization
+
+### Current v1 limitation
+
+Merchant deactivation checks for `PENDING` Payment, Refund, and WebhookEvent
+records before marking the Merchant inactive. A mutation that already passed
+authentication or entered its write path may race with those checks and commit
+after deactivation.
+
+### V2 direction
+
+Define a shared Merchant-level locking or serialization protocol used by
+deactivation and every relevant resource-creation or mutation path. The exact
+protocol should be selected only when stronger deactivation concurrency
+guarantees become a concrete requirement.
+
+### Expected benefit
+
+- prevents new unfinished work from committing across deactivation;
+- gives deactivation a clear concurrency boundary;
+- keeps authentication state and business mutations consistent.
 
 ---
 

@@ -241,7 +241,9 @@ The following are approved v1 exceptions to the `Location` header convention:
 - `POST /api/v1/merchants` returns `201 Created` with a
   `CreateMerchantResponse` body and no `Location` header;
 - `POST /api/v1/orders` returns `201 Created` with an `OrderResponse` body and
-  no `Location` header.
+  no `Location` header;
+- `POST /api/v1/payments` returns `201 Created` with a `PaymentResponse` body
+  and no `Location` header.
 
 A historical idempotent replay returns:
 
@@ -1402,7 +1404,8 @@ No `Idempotency-Key` header is used.
 }
 ```
 
-`failureCode` must be absent.
+`failureCode` may be omitted or explicitly `null`. A non-null `failureCode` is
+invalid for `SUCCEEDED`.
 
 ### Failure request
 
@@ -1623,7 +1626,7 @@ When an actual manual attempt executes, the API returns `200 OK` with the latest
 
 ## 10. Error Model
 
-All API errors use:
+LedgerPay-defined API errors use:
 
 ```json
 {
@@ -1668,6 +1671,10 @@ Unsupported method includes the HTTP `Allow` header:
   "message": "The requested HTTP method is not allowed for this endpoint."
 }
 ```
+
+A missing or unsupported JSON `Content-Type` returns `415 Unsupported Media
+Type`. LedgerPay does not guarantee a custom `ApiErrorResponse` body or error
+code for this framework-level response.
 
 Unexpected error:
 
@@ -1876,6 +1883,11 @@ v1 does not add explicit same-resource locking for:
 
 These are accepted sandbox limitations and are recorded in the separate V2 backlog.
 
+Merchant deactivation also does not provide linearizable exclusion against a
+request that already authenticated or entered a mutation path. Such a request
+may race with deactivation after the pending-resource checks. A shared
+Merchant-level locking protocol is deferred to V2.
+
 ---
 
 ## 14. Webhook Reliability Model
@@ -1894,7 +1906,13 @@ Automatic retries after the initial attempt: 2
 Retry interval: fixed 30 seconds
 HTTP timeout: 10 seconds
 Worker count: 1
+Polling model: fixed delay of 5 seconds
+Maximum due events per polling cycle: 50
 ```
+
+The 5-second polling interval controls how often the worker looks for work. It
+does not shorten the fixed 30-second eligibility interval between automatic
+HTTP attempts for the same event.
 
 ### 14.3 Success and failure classification
 
@@ -1970,6 +1988,19 @@ lastAttemptAt = null
 lastFailureCode = WEBHOOK_URL_NOT_CONFIGURED
 ```
 
+Pre-HTTP delivery processing failure:
+
+```text
+status = FAILED
+attemptCount unchanged
+lastAttemptAt unchanged
+lastFailureCode = PROCESSING_ERROR
+```
+
+Because no HTTP request began, this does not consume an attempt. Thread
+interruption propagates as an internal runtime failure and is not mapped to a
+Webhook failure code.
+
 Therefore `FAILED` means automatic delivery has stopped, either because:
 
 1. the maximum attempt count was exhausted; or
@@ -1984,6 +2015,22 @@ Retries use:
 - the same immutable `data` payload.
 
 A retry never creates a replacement event.
+
+Every outbound HTTP request uses `Content-Type: application/json` and contains
+only this stable envelope:
+
+```json
+{
+  "id": "evt_<uuid>",
+  "type": "payment.succeeded",
+  "createdAt": "2026-07-25T20:10:00Z",
+  "data": {}
+}
+```
+
+`data` comes directly from the immutable `WebhookEvent.payload` snapshot. The
+outbound body does not include mutable delivery metadata such as `status`,
+`attemptCount`, `lastAttemptAt`, `deliveredAt`, or `lastFailureCode`.
 
 ### 14.6 Delivery guarantee
 
@@ -2333,7 +2380,7 @@ No new automatic retry cycle is started.
 - production-grade rate limiting and registration-abuse prevention;
 - physical deletion of Merchant or financial history.
 
-Future improvements are tracked separately in `ledgerpay_v2_backlog.md`.
+Future improvements are tracked separately in [`v2_backlog.md`](v2_backlog.md).
 
 ---
 

@@ -1,34 +1,63 @@
 package com.ledgerpay.exception;
 
+import java.util.Optional;
+
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.ledgerpay.dto.CreateMerchantRequest;
+import com.ledgerpay.entity.Merchant;
+import com.ledgerpay.repository.MerchantRepository;
+import com.ledgerpay.security.LedgerPayAuthenticationEntryPoint;
+import com.ledgerpay.security.SecurityConfiguration;
+import com.ledgerpay.service.ApiKeyService;
 
 import jakarta.validation.Valid;
 
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(GlobalExceptionHandlerTest.ErrorTestController.class)
-@Import({GlobalExceptionHandler.class, GlobalExceptionHandlerTest.ErrorTestController.class})
+@Import({
+        GlobalExceptionHandler.class,
+        SecurityConfiguration.class,
+        LedgerPayAuthenticationEntryPoint.class,
+        GlobalExceptionHandlerTest.ErrorTestController.class
+})
 class GlobalExceptionHandlerTest {
+
+    private static final String API_KEY = "lp_test_" + "A".repeat(22);
+    private static final String API_KEY_HASH = "a".repeat(64);
 
     @Autowired
     private MockMvc mockMvc;
+
+    @MockitoBean
+    private ApiKeyService apiKeyService;
+
+    @MockitoBean
+    private MerchantRepository merchantRepository;
 
     @Test
     void beanValidationFailureReturnsFieldLevelInvalidRequest() throws Exception {
@@ -132,6 +161,50 @@ class GlobalExceptionHandlerTest {
                 .andExpect(content().string(
                         "{\"code\":\"INSUFFICIENT_REFUNDABLE_AMOUNT\","
                                 + "\"message\":\"The requested refund amount exceeds the available refundable amount.\"}"));
+    }
+
+    @Test
+    void unknownEndpointReturnsEndpointNotFoundContract() throws Exception {
+        Merchant merchant = new Merchant("Authenticated Merchant", "merchant@example.com", API_KEY_HASH);
+        when(apiKeyService.hashApiKey(API_KEY)).thenReturn(API_KEY_HASH);
+        when(merchantRepository.findByApiKeyHash(API_KEY_HASH)).thenReturn(Optional.of(merchant));
+
+        mockMvc.perform(get("/api/v1/unknown-endpoint")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isNotFound())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.code").value("ENDPOINT_NOT_FOUND"))
+                .andExpect(jsonPath("$.message").value(
+                        "The requested endpoint was not found."));
+    }
+
+    @Test
+    void unsupportedMethodReturnsMethodNotAllowedContractWithAllowHeader() throws Exception {
+        mockMvc.perform(get("/test/validated"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string(HttpHeaders.ALLOW, "POST"))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.code").value("METHOD_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.message").value(
+                        "The requested HTTP method is not allowed for this endpoint."));
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(strings = "text/plain")
+    void missingOrUnsupportedJsonContentTypeReturnsStatusOnlyUnsupportedMediaType(
+            String contentType) throws Exception {
+        MockHttpServletRequestBuilder request = post("/test/validated")
+                .content("""
+                        {"name":"Alice Shop","email":"alice@example.com"}
+                        """);
+        if (contentType != null) {
+            request.contentType(contentType);
+        }
+
+        mockMvc.perform(request)
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(content().string(""));
     }
 
     @Test

@@ -652,7 +652,8 @@ A `webhook_event` represents one business event that LedgerPay must deliver to a
 
 Migration V6 implements WebhookEvent sources for both Payment and Refund,
 including source/type consistency, Refund ownership, and Refund-event
-deduplication constraints.
+deduplication constraints. Migration V7 adds stable row-level delivery lifecycle
+constraints without encoding the application retry limit in PostgreSQL.
 
 | Column | PostgreSQL type | Nullable | Default / constraint |
 |---|---|---:|---|
@@ -678,7 +679,9 @@ DELIVERED
 FAILED
 ```
 
-`FAILED` means the configured maximum number of delivery attempts has been exhausted.
+`FAILED` means automatic delivery has stopped. This may happen because the
+maximum automatic attempts were exhausted, the current webhook URL was absent,
+or a terminal pre-HTTP processing failure occurred.
 
 ### Webhook event types
 
@@ -714,9 +717,9 @@ object created at the time the business event occurs. It does not contain the
 complete external webhook envelope.
 
 Event metadata such as the event ID, event type, creation time, and delivery
-state is stored in dedicated `webhook_event` columns. A future outbound webhook
-envelope is reconstructed from that persisted metadata and the persisted
-immutable `payload`.
+state is stored in dedicated `webhook_event` columns. The implemented outbound
+webhook envelope is reconstructed from that persisted metadata and the
+persisted immutable `payload`.
 
 This ensures that:
 
@@ -782,7 +785,7 @@ delivered_at = NULL
 last_failure_code = NULL
 ```
 
-For every delivery attempt:
+For every actual HTTP request:
 
 ```text
 attempt_count = attempt_count + 1
@@ -810,6 +813,12 @@ status = FAILED
 last_failure_code must be present
 ```
 
+If delivery cannot begin because the current URL is absent, or stable envelope
+processing fails before HTTP begins, the event becomes `FAILED` without
+incrementing `attempt_count` or changing `last_attempt_at`. Existing historical
+attempt metadata is preserved, so these terminal failure codes do not imply
+that `attempt_count` must be zero.
+
 If an earlier attempt failed but a later attempt succeeds, LedgerPay may retain `last_failure_code` for diagnostic history.
 
 ### Webhook time constraints
@@ -823,6 +832,25 @@ attempt_count > 0 -> last_attempt_at IS NOT NULL
 
 status = FAILED -> last_failure_code IS NOT NULL
 ```
+
+Migration V7 additionally enforces:
+
+```text
+status = DELIVERED -> attempt_count >= 1
+
+status = PENDING and attempt_count = 0
+-> last_failure_code IS NULL
+
+status = PENDING and attempt_count > 0
+-> last_failure_code IN (HTTP_ERROR, CONNECTION_TIMEOUT)
+
+last_failure_code IN (HTTP_ERROR, CONNECTION_TIMEOUT)
+-> attempt_count > 0
+```
+
+The database intentionally does not require `PROCESSING_ERROR` or
+`WEBHOOK_URL_NOT_CONFIGURED` to have `attempt_count = 0`, because either may be
+recorded after earlier real HTTP attempts.
 
 ### Webhook deduplication
 
@@ -861,11 +889,11 @@ Both HTTP and HTTPS URLs are allowed in v1 to support local development. Product
 
 ### Retry configuration
 
-The maximum delivery-attempt count is not stored in each event. It is configured centrally in Spring Boot, for example:
-
-```properties
-webhook.max-attempts=3
-```
+The maximum delivery-attempt count is not stored in each event and PostgreSQL
+does not enforce `attempt_count <= 3`. The v1 application defines three maximum
+automatic HTTP attempts in `WebhookDeliveryService`; manual retries may increase
+the historical count beyond three. Worker polling and retry eligibility are
+implemented in Java rather than through an `application.properties` key.
 
 ### Webhook indexes
 
