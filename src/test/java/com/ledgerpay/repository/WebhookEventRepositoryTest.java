@@ -2,6 +2,7 @@ package com.ledgerpay.repository;
 
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 import java.util.stream.Stream;
 
@@ -36,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest
 @Transactional
@@ -66,6 +68,63 @@ class WebhookEventRepositoryTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Test
+    void findsSingleEventOnlyWithinRequestedMerchantScope() throws Exception {
+        Merchant owner = persistMerchant("Scoped Event Owner");
+        Merchant otherMerchant = persistMerchant("Scoped Event Other Merchant");
+        Payment payment = persistSucceededPayment(owner, "scoped-event-payment");
+        WebhookEvent event = webhookEventRepository.saveAndFlush(new WebhookEvent(
+                payment,
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{\"payment\":{\"status\":\"SUCCEEDED\"}}")));
+
+        assertEquals(
+                event.getId(),
+                webhookEventRepository.findByIdAndMerchantId(event.getId(), owner.getId())
+                        .orElseThrow()
+                        .getId());
+        assertTrue(webhookEventRepository.findByIdAndMerchantId(
+                event.getId(),
+                otherMerchant.getId()).isEmpty());
+    }
+
+    @Test
+    void paymentHistoryIncludesPaymentAndRefundEventsInCreatedAtDescendingOrder()
+            throws Exception {
+        Merchant merchant = persistMerchant("Combined Event History Merchant");
+        Merchant otherMerchant = persistMerchant("Combined Event History Other Merchant");
+        Payment payment = persistSucceededPayment(merchant, "combined-history-payment");
+        Refund refund = persistRefund(payment, "combined-history-refund");
+        WebhookEvent olderPaymentEvent = webhookEventRepository.saveAndFlush(new WebhookEvent(
+                payment,
+                WebhookEventType.PAYMENT_SUCCEEDED,
+                objectMapper.readTree("{\"payment\":{\"status\":\"SUCCEEDED\"}}")));
+        WebhookEvent newerRefundEvent = webhookEventRepository.saveAndFlush(new WebhookEvent(
+                refund,
+                WebhookEventType.REFUND_SUCCEEDED,
+                objectMapper.readTree("{\"refund\":{\"status\":\"SUCCEEDED\"}}")));
+        jdbcTemplate.update(
+                "UPDATE webhook_event SET created_at = ? WHERE id = ?",
+                Timestamp.from(COMPLETED_AT),
+                olderPaymentEvent.getId());
+        jdbcTemplate.update(
+                "UPDATE webhook_event SET created_at = ? WHERE id = ?",
+                Timestamp.from(COMPLETED_AT.plusSeconds(60)),
+                newerRefundEvent.getId());
+        entityManager.clear();
+
+        List<WebhookEvent> history = webhookEventRepository.findPaymentHistory(
+                payment.getId(),
+                merchant.getId());
+
+        assertEquals(
+                List.of(newerRefundEvent.getId(), olderPaymentEvent.getId()),
+                history.stream().map(WebhookEvent::getId).toList());
+        assertTrue(webhookEventRepository.findPaymentHistory(
+                payment.getId(),
+                otherMerchant.getId()).isEmpty());
+    }
 
     @Test
     void savesAndReloadsPendingPaymentSucceededEvent() throws Exception {

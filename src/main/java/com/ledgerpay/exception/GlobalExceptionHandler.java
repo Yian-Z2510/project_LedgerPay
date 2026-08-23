@@ -28,6 +28,7 @@ public class GlobalExceptionHandler {
     private static final String ORDER_NOT_FOUND = "ORDER_NOT_FOUND";
     private static final String PAYMENT_NOT_FOUND = "PAYMENT_NOT_FOUND";
     private static final String REFUND_NOT_FOUND = "REFUND_NOT_FOUND";
+    private static final String WEBHOOK_EVENT_NOT_FOUND = "WEBHOOK_EVENT_NOT_FOUND";
     private static final String PAYMENT_ALREADY_PENDING = "PAYMENT_ALREADY_PENDING";
     private static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
     private static final String PAYMENT_INVALID_STATE = "PAYMENT_INVALID_STATE";
@@ -119,6 +120,15 @@ public class GlobalExceptionHandler {
                         "Invalid refund ID."));
     }
 
+    @ExceptionHandler(InvalidWebhookEventIdException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidWebhookEventId(
+            InvalidWebhookEventIdException exception) {
+        return ResponseEntity.badRequest()
+                .body(new ApiErrorResponse(
+                        VALIDATION_ERROR,
+                        exception.getMessage()));
+    }
+
     @ExceptionHandler(InvalidIdempotencyKeyException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidIdempotencyKey(
             InvalidIdempotencyKeyException exception) {
@@ -143,6 +153,15 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(new ApiErrorResponse(
                         REFUND_NOT_FOUND,
+                        exception.getMessage()));
+    }
+
+    @ExceptionHandler(WebhookEventNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleWebhookEventNotFound(
+            WebhookEventNotFoundException exception) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse(
+                        WEBHOOK_EVENT_NOT_FOUND,
                         exception.getMessage()));
     }
 
