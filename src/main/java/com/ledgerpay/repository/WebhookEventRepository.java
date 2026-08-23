@@ -1,9 +1,11 @@
 package com.ledgerpay.repository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -22,6 +24,34 @@ public interface WebhookEventRepository extends JpaRepository<WebhookEvent, UUID
             WHERE event.id = :eventId
             """)
     Optional<WebhookEvent> findForDeliveryById(@Param("eventId") UUID eventId);
+
+    @Query("""
+            SELECT event
+            FROM WebhookEvent event
+            JOIN FETCH event.merchant
+            WHERE event.id = :eventId
+              AND event.merchant.id = :merchantId
+            """)
+    Optional<WebhookEvent> findForDeliveryByIdAndMerchantId(
+            @Param("eventId") UUID eventId,
+            @Param("merchantId") UUID merchantId);
+
+    @Query("""
+            SELECT event.id
+            FROM WebhookEvent event
+            WHERE event.status = :status
+              AND event.attemptCount < :maximumAttempts
+              AND (
+                  event.attemptCount = 0
+                  OR event.lastAttemptAt <= :retryCutoff
+              )
+            ORDER BY event.createdAt ASC
+            """)
+    List<UUID> findDueEventIds(
+            @Param("status") WebhookStatus status,
+            @Param("maximumAttempts") int maximumAttempts,
+            @Param("retryCutoff") Instant retryCutoff,
+            Pageable pageable);
 
     @Query("""
             SELECT event

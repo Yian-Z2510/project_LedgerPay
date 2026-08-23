@@ -21,6 +21,9 @@ import com.ledgerpay.entity.WebhookEvent;
 import com.ledgerpay.entity.WebhookEventType;
 import com.ledgerpay.entity.WebhookFailureCode;
 import com.ledgerpay.entity.WebhookStatus;
+import com.ledgerpay.exception.WebhookInvalidStateException;
+import com.ledgerpay.exception.WebhookUrlNotConfiguredException;
+import com.ledgerpay.exception.WebhookEventNotFoundException;
 import com.ledgerpay.repository.WebhookEventRepository;
 
 import tools.jackson.databind.ObjectMapper;
@@ -142,9 +145,10 @@ class WebhookDeliveryServiceTest {
     @Test
     void laterSuccessPreservesHistoricalFailureCode() {
         WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
-        event.recordDeliveryFailed(
+        event.recordAutomaticDeliveryFailed(
                 ATTEMPT_STARTED_AT.minusSeconds(30),
-                WebhookFailureCode.HTTP_ERROR);
+                WebhookFailureCode.HTTP_ERROR,
+                3);
         when(webhookEventRepository.findForDeliveryById(event.getId()))
                 .thenReturn(Optional.of(event));
         when(webhookHttpClient.post(
@@ -163,7 +167,7 @@ class WebhookDeliveryServiceTest {
     }
 
     @Test
-    void processingFailureDoesNotCountAnHttpAttempt() {
+    void preHttpProcessingFailureIsTerminalWithoutCountingAnAttempt() {
         WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
         when(webhookEventRepository.findForDeliveryById(event.getId()))
                 .thenReturn(Optional.of(event));
@@ -175,7 +179,7 @@ class WebhookDeliveryServiceTest {
 
         WebhookEvent result = webhookDeliveryService.process(event.getId());
 
-        assertEquals(WebhookStatus.PENDING, result.getStatus());
+        assertEquals(WebhookStatus.FAILED, result.getStatus());
         assertEquals(0, result.getAttemptCount());
         assertNull(result.getLastAttemptAt());
         assertEquals(WebhookFailureCode.PROCESSING_ERROR, result.getLastFailureCode());
@@ -207,7 +211,7 @@ class WebhookDeliveryServiceTest {
         WebhookEvent deliveredEvent = pendingEvent(
                 WEBHOOK_URL,
                 objectMapper.createObjectNode());
-        deliveredEvent.recordDeliverySucceeded(ATTEMPT_STARTED_AT, COMPLETED_AT);
+        deliveredEvent.recordAutomaticDeliverySucceeded(ATTEMPT_STARTED_AT, COMPLETED_AT);
         WebhookEvent failedEvent = pendingEvent(
                 null,
                 objectMapper.createObjectNode());
@@ -232,6 +236,26 @@ class WebhookDeliveryServiceTest {
     }
 
     @Test
+    void defensivePendingEventAtAutomaticLimitIsNoOp() {
+        WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
+        ReflectionTestUtils.setField(event, "attemptCount", 3);
+        ReflectionTestUtils.setField(event, "lastAttemptAt", ATTEMPT_STARTED_AT);
+        ReflectionTestUtils.setField(
+                event,
+                "lastFailureCode",
+                WebhookFailureCode.HTTP_ERROR);
+        when(webhookEventRepository.findForDeliveryById(event.getId()))
+                .thenReturn(Optional.of(event));
+
+        assertSame(event, webhookDeliveryService.process(event.getId()));
+
+        verify(webhookHttpClient, never()).post(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class));
+        verify(webhookEventRepository, never()).save(event);
+    }
+
+    @Test
     void persistenceFailureAfterRemoteSuccessPropagatesWithoutRelabelingOutcome() {
         WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
         DataAccessResourceFailureException persistenceFailure =
@@ -253,6 +277,226 @@ class WebhookDeliveryServiceTest {
         assertSame(persistenceFailure, thrown);
         assertEquals(WebhookStatus.DELIVERED, event.getStatus());
         assertNull(event.getLastFailureCode());
+    }
+
+    @Test
+    void thirdAutomaticFailureExhaustsDeliveryAttempts() {
+        WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
+        event.recordAutomaticDeliveryFailed(
+                ATTEMPT_STARTED_AT.minusSeconds(60),
+                WebhookFailureCode.CONNECTION_TIMEOUT,
+                3);
+        event.recordAutomaticDeliveryFailed(
+                ATTEMPT_STARTED_AT.minusSeconds(30),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        when(webhookEventRepository.findForDeliveryById(event.getId()))
+                .thenReturn(Optional.of(event));
+        when(webhookHttpClient.post(
+                        org.mockito.ArgumentMatchers.eq(WEBHOOK_URL),
+                        org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class)))
+                .thenReturn(WebhookDeliveryResult.requestFailed(
+                        ATTEMPT_STARTED_AT,
+                        WebhookFailureCode.CONNECTION_TIMEOUT));
+        when(webhookEventRepository.save(event)).thenReturn(event);
+
+        WebhookEvent result = webhookDeliveryService.process(event.getId());
+
+        assertEquals(WebhookStatus.FAILED, result.getStatus());
+        assertEquals(3, result.getAttemptCount());
+        assertEquals(ATTEMPT_STARTED_AT, result.getLastAttemptAt());
+        assertEquals(WebhookFailureCode.CONNECTION_TIMEOUT, result.getLastFailureCode());
+    }
+
+    @Test
+    void thirdAutomaticAttemptMayStillSucceed() {
+        WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
+        event.recordAutomaticDeliveryFailed(
+                ATTEMPT_STARTED_AT.minusSeconds(60),
+                WebhookFailureCode.CONNECTION_TIMEOUT,
+                3);
+        event.recordAutomaticDeliveryFailed(
+                ATTEMPT_STARTED_AT.minusSeconds(30),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        when(webhookEventRepository.findForDeliveryById(event.getId()))
+                .thenReturn(Optional.of(event));
+        when(webhookHttpClient.post(
+                        org.mockito.ArgumentMatchers.eq(WEBHOOK_URL),
+                        org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class)))
+                .thenReturn(WebhookDeliveryResult.succeeded(
+                        ATTEMPT_STARTED_AT,
+                        COMPLETED_AT));
+        when(webhookEventRepository.save(event)).thenReturn(event);
+
+        WebhookEvent result = webhookDeliveryService.process(event.getId());
+
+        assertEquals(WebhookStatus.DELIVERED, result.getStatus());
+        assertEquals(3, result.getAttemptCount());
+        assertEquals(COMPLETED_AT, result.getDeliveredAt());
+    }
+
+    @Test
+    void manualSuccessUsesMerchantScopeAndStablePayloadBeyondAutomaticLimit() {
+        ObjectNode payload = objectMapper.createObjectNode();
+        payload.put("snapshot", "persisted");
+        WebhookEvent event = automaticallyExhaustedEvent(WEBHOOK_URL, payload);
+        Merchant merchant = event.getMerchant();
+        when(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                        event.getId(),
+                        merchant.getId()))
+                .thenReturn(Optional.of(event));
+        when(webhookHttpClient.post(
+                        org.mockito.ArgumentMatchers.eq(WEBHOOK_URL),
+                        org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class)))
+                .thenReturn(WebhookDeliveryResult.succeeded(
+                        ATTEMPT_STARTED_AT,
+                        COMPLETED_AT));
+        when(webhookEventRepository.save(event)).thenReturn(event);
+
+        WebhookEvent result = webhookDeliveryService.retry(merchant, event.getId());
+
+        ArgumentCaptor<WebhookDeliveryRequest> requestCaptor =
+                ArgumentCaptor.forClass(WebhookDeliveryRequest.class);
+        verify(webhookHttpClient).post(
+                org.mockito.ArgumentMatchers.eq(WEBHOOK_URL),
+                requestCaptor.capture());
+        assertEquals(payload, requestCaptor.getValue().data());
+        assertEquals("evt_" + event.getId(), requestCaptor.getValue().id());
+        assertEquals(WebhookStatus.DELIVERED, result.getStatus());
+        assertEquals(4, result.getAttemptCount());
+        assertEquals(COMPLETED_AT, result.getDeliveredAt());
+        assertEquals(WebhookFailureCode.HTTP_ERROR, result.getLastFailureCode());
+    }
+
+    @Test
+    void manualRemoteFailureRemainsFailedAndIncrementsBeyondAutomaticLimit() {
+        WebhookEvent event = automaticallyExhaustedEvent(
+                WEBHOOK_URL,
+                objectMapper.createObjectNode());
+        Merchant merchant = event.getMerchant();
+        when(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                        event.getId(),
+                        merchant.getId()))
+                .thenReturn(Optional.of(event));
+        when(webhookHttpClient.post(
+                        org.mockito.ArgumentMatchers.eq(WEBHOOK_URL),
+                        org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class)))
+                .thenReturn(WebhookDeliveryResult.requestFailed(
+                        ATTEMPT_STARTED_AT,
+                        WebhookFailureCode.CONNECTION_TIMEOUT));
+        when(webhookEventRepository.save(event)).thenReturn(event);
+
+        WebhookEvent result = webhookDeliveryService.retry(merchant, event.getId());
+
+        assertEquals(WebhookStatus.FAILED, result.getStatus());
+        assertEquals(4, result.getAttemptCount());
+        assertEquals(ATTEMPT_STARTED_AT, result.getLastAttemptAt());
+        assertEquals(WebhookFailureCode.CONNECTION_TIMEOUT, result.getLastFailureCode());
+    }
+
+    @Test
+    void manualRetryRejectsNonFailedEventBeforeHttp() {
+        WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
+        Merchant merchant = event.getMerchant();
+        when(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                        event.getId(),
+                        merchant.getId()))
+                .thenReturn(Optional.of(event));
+
+        assertThrows(
+                WebhookInvalidStateException.class,
+                () -> webhookDeliveryService.retry(merchant, event.getId()));
+
+        verify(webhookHttpClient, never()).post(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class));
+    }
+
+    @Test
+    void manualRetryRejectsDeliveredEventBeforeHttp() {
+        WebhookEvent event = pendingEvent(WEBHOOK_URL, objectMapper.createObjectNode());
+        event.recordAutomaticDeliverySucceeded(ATTEMPT_STARTED_AT, COMPLETED_AT);
+        Merchant merchant = event.getMerchant();
+        when(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                        event.getId(),
+                        merchant.getId()))
+                .thenReturn(Optional.of(event));
+
+        assertThrows(
+                WebhookInvalidStateException.class,
+                () -> webhookDeliveryService.retry(merchant, event.getId()));
+
+        verify(webhookHttpClient, never()).post(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class));
+    }
+
+    @Test
+    void manualRetryUsesMerchantScopedNotFoundBehavior() {
+        Merchant merchant = new Merchant(
+                "Other Merchant",
+                "other-" + UUID.randomUUID() + "@example.com",
+                "b".repeat(64));
+        ReflectionTestUtils.setField(merchant, "id", UUID.randomUUID());
+        UUID eventId = UUID.randomUUID();
+        when(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                        eventId,
+                        merchant.getId()))
+                .thenReturn(Optional.empty());
+
+        assertThrows(
+                WebhookEventNotFoundException.class,
+                () -> webhookDeliveryService.retry(merchant, eventId));
+    }
+
+    @Test
+    void manualRetryWithoutCurrentUrlLeavesEventUnchanged() {
+        WebhookEvent event = automaticallyExhaustedEvent(
+                null,
+                objectMapper.createObjectNode());
+        Merchant merchant = event.getMerchant();
+        when(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                        event.getId(),
+                        merchant.getId()))
+                .thenReturn(Optional.of(event));
+
+        assertThrows(
+                WebhookUrlNotConfiguredException.class,
+                () -> webhookDeliveryService.retry(merchant, event.getId()));
+
+        assertEquals(WebhookStatus.FAILED, event.getStatus());
+        assertEquals(3, event.getAttemptCount());
+        assertEquals(WebhookFailureCode.HTTP_ERROR, event.getLastFailureCode());
+        verify(webhookEventRepository, never()).save(event);
+        verify(webhookHttpClient, never()).post(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class));
+    }
+
+    @Test
+    void manualPreHttpProcessingFailureReturnsErrorAndLeavesEventUnchanged() {
+        WebhookEvent event = automaticallyExhaustedEvent(
+                WEBHOOK_URL,
+                objectMapper.createObjectNode());
+        Merchant merchant = event.getMerchant();
+        when(webhookEventRepository.findForDeliveryByIdAndMerchantId(
+                        event.getId(),
+                        merchant.getId()))
+                .thenReturn(Optional.of(event));
+        when(webhookHttpClient.post(
+                        org.mockito.ArgumentMatchers.eq(WEBHOOK_URL),
+                        org.mockito.ArgumentMatchers.any(WebhookDeliveryRequest.class)))
+                .thenReturn(WebhookDeliveryResult.processingFailed());
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> webhookDeliveryService.retry(merchant, event.getId()));
+
+        assertEquals(WebhookStatus.FAILED, event.getStatus());
+        assertEquals(3, event.getAttemptCount());
+        assertEquals(WebhookFailureCode.HTTP_ERROR, event.getLastFailureCode());
+        verify(webhookEventRepository, never()).save(event);
     }
 
     @Test
@@ -289,6 +533,23 @@ class WebhookDeliveryServiceTest {
                 payload);
         ReflectionTestUtils.setField(event, "id", UUID.randomUUID());
         ReflectionTestUtils.setField(event, "createdAt", CREATED_AT);
+        return event;
+    }
+
+    private WebhookEvent automaticallyExhaustedEvent(String webhookUrl, ObjectNode payload) {
+        WebhookEvent event = pendingEvent(webhookUrl, payload);
+        event.recordAutomaticDeliveryFailed(
+                ATTEMPT_STARTED_AT.minusSeconds(60),
+                WebhookFailureCode.CONNECTION_TIMEOUT,
+                3);
+        event.recordAutomaticDeliveryFailed(
+                ATTEMPT_STARTED_AT.minusSeconds(30),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
+        event.recordAutomaticDeliveryFailed(
+                ATTEMPT_STARTED_AT.minusSeconds(1),
+                WebhookFailureCode.HTTP_ERROR,
+                3);
         return event;
     }
 }

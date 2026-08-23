@@ -6,6 +6,7 @@ import java.util.UUID;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -15,6 +16,7 @@ import com.ledgerpay.entity.Merchant;
 import com.ledgerpay.entity.WebhookEvent;
 import com.ledgerpay.exception.InvalidPaymentIdException;
 import com.ledgerpay.exception.InvalidWebhookEventIdException;
+import com.ledgerpay.service.WebhookDeliveryService;
 import com.ledgerpay.service.WebhookEventService;
 
 @RestController
@@ -25,9 +27,13 @@ public class WebhookEventController {
     private static final String PAYMENT_ID_PREFIX = "pay_";
 
     private final WebhookEventService webhookEventService;
+    private final WebhookDeliveryService webhookDeliveryService;
 
-    public WebhookEventController(WebhookEventService webhookEventService) {
+    public WebhookEventController(
+            WebhookEventService webhookEventService,
+            WebhookDeliveryService webhookDeliveryService) {
         this.webhookEventService = webhookEventService;
+        this.webhookDeliveryService = webhookDeliveryService;
     }
 
     @GetMapping("/webhook-events/{eventId}")
@@ -50,6 +56,16 @@ public class WebhookEventController {
                 .stream()
                 .map(this::toWebhookEventResponse)
                 .toList();
+    }
+
+    @PostMapping("/webhook-events/{eventId}/retry")
+    public WebhookEventResponse retryWebhookEvent(
+            @AuthenticationPrincipal Merchant authenticatedMerchant,
+            @PathVariable String eventId) {
+        WebhookEvent event = webhookDeliveryService.retry(
+                authenticatedMerchant,
+                parseEventId(eventId));
+        return toWebhookEventResponse(event);
     }
 
     private WebhookEventResponse toWebhookEventResponse(WebhookEvent event) {

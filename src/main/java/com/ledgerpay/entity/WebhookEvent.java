@@ -187,7 +187,7 @@ public class WebhookEvent {
         return updatedAt;
     }
 
-    public void recordDeliverySucceeded(
+    public void recordAutomaticDeliverySucceeded(
             Instant attemptStartedAt,
             Instant deliveredAt) {
         requirePendingStatus();
@@ -203,26 +203,59 @@ public class WebhookEvent {
         this.deliveredAt = deliveredAt;
     }
 
-    public void recordDeliveryFailed(
+    public void recordAutomaticDeliveryFailed(
             Instant attemptStartedAt,
-            WebhookFailureCode failureCode) {
+            WebhookFailureCode failureCode,
+            int maximumAttempts) {
         requirePendingStatus();
         requireAttemptStartedAt(attemptStartedAt);
-        if (failureCode != WebhookFailureCode.CONNECTION_TIMEOUT
-                && failureCode != WebhookFailureCode.HTTP_ERROR
-                && failureCode != WebhookFailureCode.PROCESSING_ERROR) {
-            throw new IllegalArgumentException(
-                    "Actual Webhook delivery failure code is invalid.");
+        requireActualDeliveryFailureCode(failureCode);
+        if (maximumAttempts <= 0 || attemptCount >= maximumAttempts) {
+            throw new IllegalArgumentException("Webhook maximum attempts is invalid.");
         }
 
         this.attemptCount += 1;
         this.lastAttemptAt = attemptStartedAt;
         this.lastFailureCode = failureCode;
+        if (attemptCount >= maximumAttempts) {
+            this.status = WebhookStatus.FAILED;
+        }
     }
 
     public void recordProcessingFailure() {
         requirePendingStatus();
+        this.status = WebhookStatus.FAILED;
+        this.deliveredAt = null;
         this.lastFailureCode = WebhookFailureCode.PROCESSING_ERROR;
+    }
+
+    public void recordManualDeliverySucceeded(
+            Instant attemptStartedAt,
+            Instant deliveredAt) {
+        requireFailedStatus();
+        requireAttemptStartedAt(attemptStartedAt);
+        if (deliveredAt == null || deliveredAt.isBefore(attemptStartedAt)) {
+            throw new IllegalArgumentException(
+                    "Webhook delivery completion time must not be before its attempt time.");
+        }
+
+        this.attemptCount += 1;
+        this.lastAttemptAt = attemptStartedAt;
+        this.status = WebhookStatus.DELIVERED;
+        this.deliveredAt = deliveredAt;
+    }
+
+    public void recordManualDeliveryFailed(
+            Instant attemptStartedAt,
+            WebhookFailureCode failureCode) {
+        requireFailedStatus();
+        requireAttemptStartedAt(attemptStartedAt);
+        requireActualDeliveryFailureCode(failureCode);
+
+        this.attemptCount += 1;
+        this.lastAttemptAt = attemptStartedAt;
+        this.deliveredAt = null;
+        this.lastFailureCode = failureCode;
     }
 
     public void markWebhookUrlNotConfigured() {
@@ -239,10 +272,26 @@ public class WebhookEvent {
         }
     }
 
+    private void requireFailedStatus() {
+        if (status != WebhookStatus.FAILED) {
+            throw new IllegalStateException(
+                    "Only a failed Webhook event may record a manual delivery outcome.");
+        }
+    }
+
     private void requireAttemptStartedAt(Instant attemptStartedAt) {
         if (attemptStartedAt == null) {
             throw new IllegalArgumentException(
                     "Webhook delivery attempt time must not be null.");
+        }
+    }
+
+    private void requireActualDeliveryFailureCode(WebhookFailureCode failureCode) {
+        if (failureCode != WebhookFailureCode.CONNECTION_TIMEOUT
+                && failureCode != WebhookFailureCode.HTTP_ERROR
+                && failureCode != WebhookFailureCode.PROCESSING_ERROR) {
+            throw new IllegalArgumentException(
+                    "Actual Webhook delivery failure code is invalid.");
         }
     }
 }

@@ -29,6 +29,8 @@ public class GlobalExceptionHandler {
     private static final String PAYMENT_NOT_FOUND = "PAYMENT_NOT_FOUND";
     private static final String REFUND_NOT_FOUND = "REFUND_NOT_FOUND";
     private static final String WEBHOOK_EVENT_NOT_FOUND = "WEBHOOK_EVENT_NOT_FOUND";
+    private static final String WEBHOOK_INVALID_STATE = "WEBHOOK_INVALID_STATE";
+    private static final String WEBHOOK_URL_NOT_CONFIGURED = "WEBHOOK_URL_NOT_CONFIGURED";
     private static final String PAYMENT_ALREADY_PENDING = "PAYMENT_ALREADY_PENDING";
     private static final String IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT";
     private static final String PAYMENT_INVALID_STATE = "PAYMENT_INVALID_STATE";
@@ -162,6 +164,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND)
                 .body(new ApiErrorResponse(
                         WEBHOOK_EVENT_NOT_FOUND,
+                        exception.getMessage()));
+    }
+
+    @ExceptionHandler(WebhookInvalidStateException.class)
+    public ResponseEntity<ApiErrorResponse> handleWebhookInvalidState(
+            WebhookInvalidStateException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(
+                        WEBHOOK_INVALID_STATE,
+                        exception.getMessage()));
+    }
+
+    @ExceptionHandler(WebhookUrlNotConfiguredException.class)
+    public ResponseEntity<ApiErrorResponse> handleWebhookUrlNotConfigured(
+            WebhookUrlNotConfiguredException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(
+                        WEBHOOK_URL_NOT_CONFIGURED,
                         exception.getMessage()));
     }
 

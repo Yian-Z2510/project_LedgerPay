@@ -27,11 +27,14 @@ import com.ledgerpay.entity.WebhookStatus;
 import com.ledgerpay.exception.GlobalExceptionHandler;
 import com.ledgerpay.exception.PaymentNotFoundException;
 import com.ledgerpay.exception.WebhookEventNotFoundException;
+import com.ledgerpay.exception.WebhookInvalidStateException;
+import com.ledgerpay.exception.WebhookUrlNotConfiguredException;
 import com.ledgerpay.repository.MerchantRepository;
 import com.ledgerpay.security.LedgerPayAuthenticationEntryPoint;
 import com.ledgerpay.security.SecurityConfiguration;
 import com.ledgerpay.service.ApiKeyService;
 import com.ledgerpay.service.WebhookEventService;
+import com.ledgerpay.service.WebhookDeliveryService;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -41,6 +44,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -67,6 +71,9 @@ class WebhookEventControllerTest {
 
     @MockitoBean
     private WebhookEventService webhookEventService;
+
+    @MockitoBean
+    private WebhookDeliveryService webhookDeliveryService;
 
     @MockitoBean
     private ApiKeyService apiKeyService;
@@ -241,6 +248,98 @@ class WebhookEventControllerTest {
                 .andExpect(jsonPath("$.message").value("Invalid or missing API credentials."));
 
         verifyNoInteractions(webhookEventService);
+    }
+
+    @Test
+    void manualRetryReturnsLatestEventAfterRealRemoteFailure() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID eventId = UUID.randomUUID();
+        WebhookEvent event = event(
+                eventId,
+                WebhookEventType.PAYMENT_FAILED,
+                WebhookStatus.FAILED,
+                4,
+                objectMapper.readTree("{\"payment\":{\"status\":\"FAILED\"}}"),
+                CREATED_AT);
+        when(event.getLastAttemptAt()).thenReturn(LAST_ATTEMPT_AT);
+        when(event.getLastFailureCode()).thenReturn(WebhookFailureCode.HTTP_ERROR);
+        authenticate(merchant);
+        when(webhookDeliveryService.retry(merchant, eventId)).thenReturn(event);
+
+        mockMvc.perform(post("/api/v1/webhook-events/evt_" + eventId + "/retry")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("evt_" + eventId))
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.attemptCount").value(4))
+                .andExpect(jsonPath("$.lastFailureCode").value("HTTP_ERROR"));
+
+        verify(webhookDeliveryService).retry(merchant, eventId);
+    }
+
+    @Test
+    void manualRetryUsesNotFoundContractForMissingOrCrossMerchantEvent() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID eventId = UUID.randomUUID();
+        authenticate(merchant);
+        when(webhookDeliveryService.retry(merchant, eventId))
+                .thenThrow(new WebhookEventNotFoundException());
+
+        mockMvc.perform(post("/api/v1/webhook-events/evt_" + eventId + "/retry")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("WEBHOOK_EVENT_NOT_FOUND"));
+    }
+
+    @Test
+    void manualRetryMapsInvalidStateAndMissingUrlToConflictContracts() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID invalidStateEventId = UUID.randomUUID();
+        UUID missingUrlEventId = UUID.randomUUID();
+        authenticate(merchant);
+        when(webhookDeliveryService.retry(merchant, invalidStateEventId))
+                .thenThrow(new WebhookInvalidStateException());
+        when(webhookDeliveryService.retry(merchant, missingUrlEventId))
+                .thenThrow(new WebhookUrlNotConfiguredException());
+
+        mockMvc.perform(post("/api/v1/webhook-events/evt_"
+                        + invalidStateEventId + "/retry")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("WEBHOOK_INVALID_STATE"));
+        mockMvc.perform(post("/api/v1/webhook-events/evt_"
+                        + missingUrlEventId + "/retry")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("WEBHOOK_URL_NOT_CONFIGURED"));
+    }
+
+    @Test
+    void manualPreHttpProcessingFailureUsesGenericInternalError() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        UUID eventId = UUID.randomUUID();
+        authenticate(merchant);
+        when(webhookDeliveryService.retry(merchant, eventId))
+                .thenThrow(new IllegalStateException("processing failed"));
+
+        mockMvc.perform(post("/api/v1/webhook-events/evt_" + eventId + "/retry")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("INTERNAL_ERROR"));
+    }
+
+    @Test
+    void manualRetryPreservesIdValidationAndAuthenticationContracts() throws Exception {
+        Merchant merchant = authenticatedMerchant();
+        authenticate(merchant);
+
+        mockMvc.perform(post("/api/v1/webhook-events/evt_not-a-uuid/retry")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + API_KEY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
+        mockMvc.perform(post("/api/v1/webhook-events/evt_" + UUID.randomUUID() + "/retry"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
 
     private WebhookEvent event(
