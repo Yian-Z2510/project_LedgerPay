@@ -48,7 +48,7 @@ class WebhookDeliveryWorkerTest {
         when(webhookEventRepository.findDueEventIds(
                         org.mockito.ArgumentMatchers.eq(WebhookStatus.PENDING),
                         org.mockito.ArgumentMatchers.eq(3),
-                        org.mockito.ArgumentMatchers.eq(NOW.minusSeconds(30)),
+                        org.mockito.ArgumentMatchers.eq(NOW.minusSeconds(10)),
                         org.mockito.ArgumentMatchers.any(Pageable.class)))
                 .thenReturn(List.of(firstEventId, secondEventId, thirdEventId));
         doThrow(new DataAccessResourceFailureException("database unavailable"))
@@ -59,7 +59,7 @@ class WebhookDeliveryWorkerTest {
         verify(webhookEventRepository).findDueEventIds(
                 org.mockito.ArgumentMatchers.eq(WebhookStatus.PENDING),
                 org.mockito.ArgumentMatchers.eq(3),
-                org.mockito.ArgumentMatchers.eq(NOW.minusSeconds(30)),
+                org.mockito.ArgumentMatchers.eq(NOW.minusSeconds(10)),
                 pageableCaptor.capture());
         assertEquals(0, pageableCaptor.getValue().getPageNumber());
         assertEquals(50, pageableCaptor.getValue().getPageSize());

@@ -192,7 +192,7 @@ Sensitive response data should be bounded and redacted.
 
 ### Current v1 limitation
 
-v1 uses a fixed 30-second retry interval.
+v1 uses a fixed 10-second retry interval.
 
 ### V2 direction
 
