@@ -162,60 +162,91 @@ jobs:
       - publish-images
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     environment:
       name: production
       url: https://ledgerpay.yianz.me
     concurrency:
       group: ledgerpay-production-deployment
       cancel-in-progress: false
+    env:
+      AWS_REGION: eu-west-1
+      EC2_INSTANCE_ID: i-06eb52b897477b786
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
-          persist-credentials: false
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Configure strict SSH verification
+      - name: Send production deployment command
+        id: send_command
         shell: bash
-        env:
-          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
-          EC2_SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          umask 077
-          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "${RUNNER_TEMP}/ledgerpay-deploy-key"
-          printf '%s\n' "$EC2_SSH_KNOWN_HOSTS" > "${RUNNER_TEMP}/ledgerpay-known-hosts"
+          command_id="$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --document-name AWS-RunShellScript \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --comment "Deploy LedgerPay ${GITHUB_SHA}" \
+            --parameters "commands=[\"sudo -H -u ubuntu bash /opt/ledgerpay/deploy-production.sh '${GITHUB_SHA}'\"]" \
+            --query 'Command.CommandId' \
+            --output text)"
 
-      - name: Upload production Compose
+          if [[ ! "$command_id" =~ ^[0-9a-f-]{36}$ ]]; then
+            echo "AWS SSM did not return a valid command ID." >&2
+            exit 1
+          fi
+
+          echo "command_id=${command_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deployment and show result
         shell: bash
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
         run: |
           set -euo pipefail
-          remote_compose="/opt/ledgerpay/compose.production.yaml.next-${GITHUB_SHA}"
-          scp \
-            -i "${RUNNER_TEMP}/ledgerpay-deploy-key" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="${RUNNER_TEMP}/ledgerpay-known-hosts" \
-            compose.production.yaml \
-            "${EC2_USER}@${EC2_HOST}:${remote_compose}"
+          command_id="${{ steps.send_command.outputs.command_id }}"
+          terminal_status=""
 
-      - name: Deploy and verify production
-        shell: bash
-        env:
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-        run: |
-          set -euo pipefail
-          ssh \
-            -i "${RUNNER_TEMP}/ledgerpay-deploy-key" \
-            -o BatchMode=yes \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=yes \
-            -o UserKnownHostsFile="${RUNNER_TEMP}/ledgerpay-known-hosts" \
-            "${EC2_USER}@${EC2_HOST}" \
-            "NEW_IMAGE_TAG='${GITHUB_SHA}' bash -s" \
-            < deploy/deploy-production.sh
+          for _ in {1..150}; do
+            status="$(aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query Status \
+              --output text 2>/dev/null || true)"
+
+            case "$status" in
+              Success|Cancelled|TimedOut|Failed)
+                terminal_status="$status"
+                break
+                ;;
+              Pending|InProgress|Delayed|Cancelling|"")
+                sleep 10
+                ;;
+              *)
+                echo "Unexpected AWS SSM status: ${status}" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          echo "AWS SSM deployment status: ${terminal_status:-polling-timeout}"
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$command_id" \
+            --instance-id "$EC2_INSTANCE_ID" \
+            --query StandardOutputContent \
+            --output text || true
+
+          if [[ "$terminal_status" != "Success" ]]; then
+            aws ssm get-command-invocation \
+              --region "$AWS_REGION" \
+              --command-id "$command_id" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query StandardErrorContent \
+              --output text >&2 || true
+            exit 1
+          fi
