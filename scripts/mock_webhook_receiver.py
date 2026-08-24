@@ -16,23 +16,42 @@ def parse_args() -> argparse.Namespace:
         metavar="200-599",
         help="HTTP response status to return (default: 204)",
     )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface to bind (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        choices=range(1, 65536),
+        default=9000,
+        metavar="1-65535",
+        help="Port to listen on (default: 9000)",
+    )
     return parser.parse_args()
 
 
 def create_handler(response_status: int) -> type[BaseHTTPRequestHandler]:
     class WebhookHandler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
+            if self.path != "/webhook":
+                self.send_error(404)
+                return
+
             content_length = int(self.headers.get("Content-Length", "0"))
-            body = self.rfile.read(content_length)
-            body_preview = body.decode("utf-8", errors="replace")[:1000]
+            remaining = content_length
+            while remaining > 0:
+                chunk = self.rfile.read(min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
 
             print(
                 f"Webhook received: POST {self.path} "
                 f"({content_length} bytes) -> HTTP {response_status}",
                 flush=True,
             )
-            if body_preview:
-                print(body_preview, flush=True)
 
             self.send_response(response_status)
             self.send_header("Content-Length", "0")
@@ -47,12 +66,12 @@ def create_handler(response_status: int) -> type[BaseHTTPRequestHandler]:
 def main() -> None:
     args = parse_args()
     server = ThreadingHTTPServer(
-        ("127.0.0.1", 9000),
+        (args.host, args.port),
         create_handler(args.status),
     )
 
     print(
-        f"Mock Webhook receiver listening at http://localhost:9000/webhook "
+        f"Mock Webhook receiver listening at http://{args.host}:{args.port}/webhook "
         f"and returning HTTP {args.status}.",
         flush=True,
     )

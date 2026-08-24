@@ -1,0 +1,14 @@
+FROM python:3.13-alpine
+
+RUN addgroup -S ledgerpay \
+    && adduser -S -D -H -G ledgerpay ledgerpay
+
+WORKDIR /app
+
+COPY --chown=ledgerpay:ledgerpay mock_webhook_receiver.py ./
+
+USER ledgerpay
+
+EXPOSE 9000
+
+CMD ["python", "mock_webhook_receiver.py", "--host", "0.0.0.0", "--port", "9000", "--status", "204"]
