@@ -19,6 +19,7 @@ target/
 .env.*
 !.env.example
 !.env.local.example
+!.env.production.example
 !frontend/.env.example
 
 # Private keys and certificates.
