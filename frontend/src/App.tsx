@@ -12,6 +12,7 @@ import {
   Webhook,
 } from 'lucide-react'
 import { apiRequest, ApiRequestError, setActiveApiKey, type ApiResult } from './api'
+import { generateUuid } from './uuid'
 import type {
   ApiConsoleEntry,
   CreateMerchantResponse,
@@ -113,11 +114,11 @@ function parseMinorUnits(value: string): number | null {
 }
 
 function createPaymentIdempotencyKey() {
-  return `payment_${crypto.randomUUID()}`
+  return `payment_${generateUuid()}`
 }
 
 function createRefundIdempotencyKey() {
-  return `refund_${crypto.randomUUID()}`
+  return `refund_${generateUuid()}`
 }
 
 function maskApiKey(apiKey: string | null) {
@@ -144,7 +145,7 @@ function redactedKeyResponse<T extends { apiKey: string }>(response: T) {
 function createDemoMerchantBody(webhookUrl: string | null) {
   return {
     name: 'LedgerPay Demo',
-    email: `ledgerpay-demo-${Date.now()}-${crypto.randomUUID()}@example.com`,
+    email: `ledgerpay-demo-${Date.now()}-${generateUuid()}@example.com`,
     webhookUrl,
   }
 }
