@@ -707,7 +707,7 @@ The future GPT should still read the full project documents. The following rules
 - business transition and WebhookEvent insertion commit together;
 - external HTTP delivery happens after commit;
 - maximum three total automatic attempts;
-- fixed 30-second retry interval;
+- fixed 10-second retry interval;
 - 10-second HTTP timeout;
 - every `2xx` response is success;
 - delivery guarantee is at-least-once;

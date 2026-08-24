@@ -1903,7 +1903,7 @@ the related transition. External HTTP delivery occurs outside that transaction.
 Maximum total automatic attempts: 3
 Initial attempt: included
 Automatic retries after the initial attempt: 2
-Retry interval: fixed 30 seconds
+Retry interval: fixed 10 seconds
 HTTP timeout: 10 seconds
 Worker count: 1
 Polling model: fixed delay of 5 seconds
@@ -1911,7 +1911,7 @@ Maximum due events per polling cycle: 50
 ```
 
 The 5-second polling interval controls how often the worker looks for work. It
-does not shorten the fixed 30-second eligibility interval between automatic
+does not shorten the fixed 10-second eligibility interval between automatic
 HTTP attempts for the same event.
 
 ### 14.3 Success and failure classification

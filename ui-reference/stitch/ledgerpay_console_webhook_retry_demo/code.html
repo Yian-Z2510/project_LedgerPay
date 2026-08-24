@@ -1,0 +1,301 @@
+<!DOCTYPE html><html class="light" lang="en"><head>
+<meta charset="utf-8">
+<meta content="width=device-width, initial-scale=1.0" name="viewport">
+<title>LedgerPay Demo Console</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "on-background": "#161c22",
+                "tertiary-fixed": "#cde5ff",
+                "background": "#f7f9ff",
+                "on-error-container": "#93000a",
+                "primary-fixed-dim": "#a8cfbd",
+                "on-primary-container": "#f5fff8",
+                "surface-tint": "#426657",
+                "secondary": "#71585f",
+                "surface-container": "#e9eef6",
+                "inverse-on-surface": "#ecf1f9",
+                "surface-dim": "#d5dae2",
+                "on-secondary-fixed-variant": "#574148",
+                "on-tertiary": "#ffffff",
+                "surface-bright": "#f7f9ff",
+                "inverse-primary": "#a8cfbd",
+                "on-surface": "#161c22",
+                "primary": "#3f6355",
+                "outline-variant": "#c1c8c3",
+                "secondary-container": "#f9d7e0",
+                "surface": "#f7f9ff",
+                "secondary-fixed": "#fbdae3",
+                "on-tertiary-fixed": "#001d32",
+                "on-primary": "#ffffff",
+                "primary-fixed": "#c4ebd9",
+                "surface-container-highest": "#dde3eb",
+                "primary-container": "#587c6d",
+                "error-container": "#ffdad6",
+                "surface-container-lowest": "#ffffff",
+                "surface-container-low": "#eff4fc",
+                "secondary-fixed-dim": "#debec7",
+                "on-tertiary-container": "#fdfcff",
+                "surface-container-high": "#e3e9f0",
+                "on-secondary": "#ffffff",
+                "on-primary-fixed-variant": "#2a4d40",
+                "on-tertiary-fixed-variant": "#104a70",
+                "on-secondary-container": "#755c63",
+                "on-primary-fixed": "#002116",
+                "inverse-surface": "#2b3137",
+                "on-secondary-fixed": "#29161d",
+                "tertiary-fixed-dim": "#9bcbf8",
+                "on-surface-variant": "#414844",
+                "outline": "#717974",
+                "tertiary-container": "#4879a1",
+                "tertiary": "#2d6087",
+                "on-error": "#ffffff",
+                "error": "#ba1a1a",
+                "surface-variant": "#dde3eb"
+        },
+        "borderRadius": {
+                "DEFAULT": "0.125rem",
+                "lg": "0.25rem",
+                "xl": "0.5rem",
+                "full": "0.75rem"
+        },
+        "spacing": {
+                "sm": "12px",
+                "xs": "8px",
+                "gutter": "24px",
+                "md": "20px",
+                "xl": "48px",
+                "container-max": "1440px",
+                "base": "4px",
+                "lg": "32px"
+        },
+        "fontFamily": {
+                "headline-lg": [
+                        "Inter"
+                ],
+                "headline-lg-mobile": [
+                        "Inter"
+                ],
+                "body-lg": [
+                        "Inter"
+                ],
+                "headline-md": [
+                        "Inter"
+                ],
+                "data-mono": [
+                        "JetBrains Mono"
+                ],
+                "body-md": [
+                        "Inter"
+                ],
+                "label-md": [
+                        "Inter"
+                ],
+                "headline-sm": [
+                        "Inter"
+                ]
+        },
+        "fontSize": {
+                "headline-lg": [
+                        "32px",
+                        {
+                                "lineHeight": "40px",
+                                "letterSpacing": "-0.02em",
+                                "fontWeight": "700"
+                        }
+                ],
+                "headline-lg-mobile": [
+                        "24px",
+                        {
+                                "lineHeight": "32px",
+                                "fontWeight": "700"
+                        }
+                ],
+                "body-lg": [
+                        "16px",
+                        {
+                                "lineHeight": "24px",
+                                "fontWeight": "400"
+                        }
+                ],
+                "headline-md": [
+                        "24px",
+                        {
+                                "lineHeight": "32px",
+                                "letterSpacing": "-0.01em",
+                                "fontWeight": "600"
+                        }
+                ],
+                "data-mono": [
+                        "13px",
+                        {
+                                "lineHeight": "20px",
+                                "fontWeight": "400"
+                        }
+                ],
+                "body-md": [
+                        "14px",
+                        {
+                                "lineHeight": "20px",
+                                "fontWeight": "400"
+                        }
+                ],
+                "label-md": [
+                        "13px",
+                        {
+                                "lineHeight": "16px",
+                                "letterSpacing": "0.03em",
+                                "fontWeight": "500"
+                        }
+                ],
+                "headline-sm": [
+                        "20px",
+                        {
+                                "lineHeight": "28px",
+                                "fontWeight": "600"
+                        }
+                ]
+        }
+},
+    },
+  }
+</script>
+</head>
+<body class="bg-background text-on-surface font-body-md min-h-screen flex flex-col">
+<!-- TopNavBar component -->
+<nav class="bg-surface dark:bg-surface-dim docked full-width top-0 border-b border-outline-variant dark:border-outline flat no shadows relative z-50">
+<div class="flex justify-between items-center w-full px-lg max-w-container-max mx-auto h-16">
+<div class="flex items-center gap-xs">
+<span class="text-headline-md font-headline-md font-bold text-primary dark:text-primary-fixed">LedgerPay | Demo Console</span>
+</div>
+<div class="flex items-center gap-md">
+<div class="flex items-center gap-base">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+<span class="text-label-md font-label-md text-on-surface-variant">API Healthy</span>
+</div>
+<button class="px-sm py-base rounded-md border border-outline text-label-md font-label-md text-on-surface-variant hover:bg-surface-container-high transition-colors duration-200">
+                    Reset Demo
+                </button>
+</div>
+</div>
+</nav>
+<!-- Main Content Grid -->
+<main class="flex-grow w-full max-w-container-max mx-auto px-lg py-lg grid grid-cols-1 md:grid-cols-12 gap-gutter relative">
+<!-- Merchant Context Area (Full width) -->
+<div class="col-span-1 md:col-span-12 mb-xs">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-lg p-md flex flex-wrap items-center justify-between gap-md shadow-sm">
+<div class="flex items-center gap-md">
+<div class="w-10 h-10 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center">
+<span class="material-symbols-outlined" data-icon="store">store</span>
+</div>
+<div>
+<h2 class="text-headline-sm font-headline-sm text-on-surface">Merchant: Demo Store</h2>
+<div class="flex items-center gap-sm mt-base text-body-md text-on-surface-variant">
+<span class="">ID: mer_88120</span>
+<span class="w-1 h-1 rounded-full bg-outline"></span>
+<span class="px-xs py-base bg-primary-fixed text-on-primary-fixed-variant text-label-md font-label-md rounded-md">ACTIVE</span>
+<span class="w-1 h-1 rounded-full bg-outline"></span>
+<span class="font-data-mono">API Key: lp_test_••••••1234</span>
+<button class="text-primary hover:text-primary-fixed transition-colors">
+<span class="material-symbols-outlined text-[16px]" data-icon="content_copy">content_copy</span>
+</button>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Left Column: Workflow Simulator (8 columns) -->
+<div class="col-span-1 md:col-span-8 flex flex-col gap-lg relative">
+<!-- Connection Line Background -->
+<div class="absolute left-[39px] top-10 bottom-[20%] w-[2px] bg-outline-variant border-dashed border-l-2 border-outline-variant z-0"></div>
+<!-- Order Section -->
+<div class="relative z-10 flex gap-md">
+<div class="w-20 flex-shrink-0 flex flex-col items-center pt-md">
+<div class="w-8 h-8 rounded-full bg-surface-container-highest border-2 border-outline-variant flex items-center justify-center text-on-surface-variant">
+<span class="material-symbols-outlined text-[18px]" data-icon="shopping_cart">shopping_cart</span>
+</div>
+</div>
+<div class="flex-grow bg-surface-container-lowest border border-outline-variant rounded-lg p-md shadow-sm opacity-80">
+<div class="flex justify-between items-start">
+<div>
+<div class="flex items-center gap-sm mb-base">
+<h3 class="text-headline-sm font-headline-sm text-on-surface-variant">Order #ORD-991</h3>
+<span class="px-xs py-base bg-secondary-fixed text-on-secondary-fixed-variant text-label-md font-label-md rounded-md">PARTIALLY_REFUNDED</span>
+</div>
+<p class="text-body-md text-on-surface-variant">Amount: <span class="font-bold">€120.00</span> EUR</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Payment Section -->
+<div class="relative z-10 flex gap-md">
+<div class="w-20 flex-shrink-0 flex flex-col items-center pt-md">
+<div class="w-8 h-8 rounded-full bg-primary-container border-2 border-primary flex items-center justify-center text-on-primary-container">
+<span class="material-symbols-outlined text-[18px]" data-icon="check">check</span>
+</div>
+</div>
+<div class="flex-grow bg-surface-container-lowest border border-outline-variant rounded-lg p-md shadow-sm opacity-80">
+<div class="flex justify-between items-start">
+<div>
+<div class="flex items-center gap-sm mb-base">
+<h3 class="text-headline-sm font-headline-sm text-on-surface-variant font-bold">Payment #PAY-772</h3>
+<span class="px-xs py-base bg-primary-fixed text-on-primary-fixed-variant text-label-md font-label-md rounded-md">SUCCEEDED</span>
+</div>
+<p class="text-body-md text-on-surface-variant mb-base">Amount: <span class="font-bold">€120.00</span> EUR</p>
+<div class="flex items-center gap-sm text-body-md text-on-surface-variant font-data-mono">
+<span class="">payment_idem_001</span>
+<span class="text-[11px] text-outline italic ml-2 border border-outline rounded px-1">Same payment returned on retry</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Refund Section -->
+<div class="relative z-10 flex gap-md">
+<div class="w-20 flex-shrink-0 flex flex-col items-center pt-md">
+<div class="w-8 h-8 rounded-full bg-primary-container border-2 border-primary flex items-center justify-center text-on-primary-container">
+<span class="material-symbols-outlined text-[18px]" data-icon="currency_exchange">currency_exchange</span>
+</div>
+</div>
+<div class="flex-grow bg-surface-container-lowest border border-outline-variant rounded-lg p-md shadow-sm opacity-80"><div class="flex justify-between items-start"><div><div class="flex items-center gap-sm mb-base"><h3 class="text-headline-sm font-headline-sm text-on-surface-variant font-bold">Refund #REF-001</h3><span class="px-xs py-base bg-primary-fixed text-on-primary-fixed-variant text-label-md font-label-md rounded-md">SUCCEEDED</span></div><p class="text-body-md text-on-surface-variant mb-base">Amount: <span class="font-bold">€20.00</span> EUR</p><div class="flex items-center gap-sm text-body-md text-on-surface-variant font-data-mono"><span class="">refund_idem_001</span><span class="text-[11px] text-outline italic ml-2 border border-outline rounded px-1">Refunded: €20.00 | Available: €100.00</span></div></div></div></div>
+</div>
+</div>
+<!-- Right Column: System Events (4 columns) -->
+<div class="col-span-1 md:col-span-4 flex flex-col justify-start">
+<div class="bg-surface-container-lowest border border-outline-variant rounded-lg p-md shadow-sm overflow-y-auto h-full"><div class="flex flex-col h-full gap-lg"><div class="flex-grow"><h3 class="text-label-md font-bold text-on-surface-variant uppercase tracking-wider mb-md flex items-center gap-sm border-b border-outline-variant pb-sm"><span class="material-symbols-outlined text-[18px]" data-icon="webhook">webhook</span> Webhook Events</h3><div class="relative pl-xs"><div class="absolute left-[11px] top-2 bottom-0 w-[2px] bg-outline-variant"></div><div class="relative pl-lg mb-sm"><div class="absolute left-0 top-1 w-6 h-6 rounded-full bg-surface-container-lowest border-2 border-primary flex items-center justify-center z-10"><div class="w-2 h-2 rounded-full bg-primary"></div></div><div class="bg-surface rounded-md p-sm border border-outline-variant hover:border-primary transition-colors cursor-pointer"><div class="text-label-md font-label-md text-on-surface mb-base font-data-mono">payment.succeeded</div><div class="flex justify-between items-center text-[11px] text-on-surface-variant"><span class="text-primary font-medium">DELIVERED</span><span>Attempt: 1</span></div></div></div><div class="relative pl-lg"><div class="absolute left-0 top-1 w-6 h-6 rounded-full bg-surface-container-lowest border-2 border-error flex items-center justify-center z-10"><div class="w-2 h-2 rounded-full bg-error"></div></div><div class="bg-primary-container/10 rounded-md p-sm border border-primary transition-colors cursor-pointer"><div class="text-label-md font-label-md text-on-surface mb-base font-data-mono">refund.succeeded</div><div class="flex justify-between items-center text-[11px] text-on-surface-variant"><span class="text-error font-medium">FAILED</span><span>Attempt: 1</span></div></div></div></div></div><div class="border-t border-outline-variant pt-md"><h3 class="text-label-md font-bold text-on-surface-variant uppercase tracking-wider mb-sm">Event Details</h3><div class="bg-surface-container-low rounded-md p-sm text-xs space-y-base"><div class="flex justify-between"><span class="text-on-surface-variant">Event Type:</span><span class="font-data-mono">refund.succeeded</span></div><div class="flex justify-between"><span class="text-on-surface-variant">Status:</span><span class="text-error font-bold">FAILED</span></div><div class="flex justify-between"><span class="text-on-surface-variant">Attempt Count:</span><span>1</span></div><div class="flex justify-between"><span class="text-on-surface-variant">Last Attempt:</span><span>2026-08-16 14:30:05</span></div><div class="flex justify-between"><span class="text-on-surface-variant">Failure Code:</span><span class="font-data-mono text-error">CONNECTION_TIMEOUT</span></div><button class="w-full mt-sm bg-primary text-on-primary py-xs rounded text-label-md font-label-md hover:bg-surface-tint transition-colors">Retry Delivery</button></div></div></div></div>
+</div>
+<!-- API Response Panel (Console) - Full Width Bottom -->
+<div class="col-span-1 md:col-span-12 mt-lg bg-[#212529] rounded-lg shadow-inner overflow-hidden border border-[#343a40]">
+<div class="flex justify-between items-center px-md py-sm border-b border-[#343a40] bg-[#1a1d20]">
+<div class="flex items-center gap-sm">
+<span class="text-xs font-data-mono text-[#a8cfbd]">POST</span>
+<span class="text-xs font-data-mono text-[#dde3eb]">/api/v1/payments/PAY-772/refunds</span>
+<span class="px-xs py-base bg-primary-fixed text-on-primary-fixed-variant text-[10px] font-bold rounded">201 CREATED</span>
+</div>
+<button class="text-[#9bcbf8] hover:text-tertiary-fixed flex items-center gap-base text-xs font-data-mono transition-colors">
+<span class="material-symbols-outlined text-[14px]" data-icon="content_copy">content_copy</span>
+                        Copy
+                    </button>
+</div>
+<div class="p-md overflow-x-auto text-sm font-data-mono text-[#dde3eb] leading-relaxed">
+<pre><code>{
+  <span class="text-[#9bcbf8]">"id"</span>: <span class="text-[#c4ebd9]">"REF-001"</span>,
+  <span class="text-[#9bcbf8]">"paymentId"</span>: <span class="text-[#c4ebd9]">"PAY-772"</span>,
+  <span class="text-[#9bcbf8]">"amount"</span>: <span class="text-[#fbdae3]">2000</span>,
+  <span class="text-[#9bcbf8]">"currency"</span>: <span class="text-[#c4ebd9]">"EUR"</span>,
+  <span class="text-[#9bcbf8]">"status"</span>: <span class="text-[#c4ebd9]">"SUCCEEDED"</span>,
+  <span class="text-[#9bcbf8]">"idempotencyKey"</span>: <span class="text-[#c4ebd9]">"refund_idem_001"</span>,
+  <span class="text-[#9bcbf8]">"createdAt"</span>: <span class="text-[#c4ebd9]">"2026-08-16T14:28:10Z"</span>,
+  <span class="text-[#9bcbf8]">"completedAt"</span>: <span class="text-[#c4ebd9]">"2026-08-16T14:30:00Z"</span>
+}</code></pre>
+</div>
+</div>
+</main>
+</body></html>

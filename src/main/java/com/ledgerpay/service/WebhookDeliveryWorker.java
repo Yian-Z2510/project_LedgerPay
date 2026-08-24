@@ -25,7 +25,7 @@ import com.ledgerpay.repository.WebhookEventRepository;
 public class WebhookDeliveryWorker {
 
     static final long POLLING_DELAY_MILLISECONDS = 5_000L;
-    static final Duration RETRY_INTERVAL = Duration.ofSeconds(30);
+    static final Duration RETRY_INTERVAL = Duration.ofSeconds(10);
     static final int BATCH_SIZE = 50;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(WebhookDeliveryWorker.class);

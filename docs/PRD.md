@@ -165,7 +165,7 @@ When a payment or refund reaches a meaningful end state, the system emits a webh
 - The WebhookEvent row is durably persisted in the same business database
   transaction. External HTTP delivery occurs outside that transaction.
 - A polling worker performs real HTTP delivery with at most three automatic
-  attempts separated by a fixed 30-second retry interval.
+  attempts separated by a fixed 10-second retry interval.
 - Failed events can be retried manually after the Merchant fixes its current
   webhook destination.
 
