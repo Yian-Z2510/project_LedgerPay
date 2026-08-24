@@ -14,4 +14,14 @@ target/
 .settings/
 .vscode/
 
-.env.local
+# Local and production environment files may contain credentials.
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.production.example
+!frontend/.env.example
+
+# Private keys and certificates.
+*.key
+*.pem

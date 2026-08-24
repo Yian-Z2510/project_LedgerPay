@@ -12,6 +12,7 @@ import {
   Webhook,
 } from 'lucide-react'
 import { apiRequest, ApiRequestError, setActiveApiKey, type ApiResult } from './api'
+import { generateUuid } from './uuid'
 import type {
   ApiConsoleEntry,
   CreateMerchantResponse,
@@ -32,6 +33,11 @@ type DemoConfig = {
   apiKey: string | null
   webhookUrl: string
 }
+const DEMO_API_KEY_STORAGE_KEY = 'ledgerpay.demo.apiKey'
+const PRODUCTION_WEBHOOK_URL =
+  import.meta.env.VITE_LEDGERPAY_WEBHOOK_URL?.trim() || null
+let initialDemoMerchantRequest: Promise<ApiResult<CreateMerchantResponse>> | null = null
+
 type RefundReplayRequest = {
   paymentId: string
   amount: number
@@ -108,11 +114,11 @@ function parseMinorUnits(value: string): number | null {
 }
 
 function createPaymentIdempotencyKey() {
-  return `payment_${crypto.randomUUID()}`
+  return `payment_${generateUuid()}`
 }
 
 function createRefundIdempotencyKey() {
-  return `refund_${crypto.randomUUID()}`
+  return `refund_${generateUuid()}`
 }
 
 function maskApiKey(apiKey: string | null) {
@@ -134,6 +140,26 @@ function merchantFromCreation(response: CreateMerchantResponse): Merchant {
 
 function redactedKeyResponse<T extends { apiKey: string }>(response: T) {
   return { ...response, apiKey: maskApiKey(response.apiKey) }
+}
+
+function createDemoMerchantBody(webhookUrl: string | null) {
+  return {
+    name: 'LedgerPay Demo',
+    email: `ledgerpay-demo-${Date.now()}-${generateUuid()}@example.com`,
+    webhookUrl,
+  }
+}
+
+function createInitialDemoMerchant(webhookUrl: string | null) {
+  initialDemoMerchantRequest ??= apiRequest<CreateMerchantResponse>(
+    '/api/v1/merchants',
+    {
+      method: 'POST',
+      body: JSON.stringify(createDemoMerchantBody(webhookUrl)),
+    },
+    { authenticated: false },
+  )
+  return initialDemoMerchantRequest
 }
 
 const REFUND_REASONS: Array<{ value: RefundReasonCode; label: string }> = [
@@ -1037,38 +1063,59 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [consoleEntry, setConsoleEntry] = useState<ApiConsoleEntry>(READY_CONSOLE)
 
+  function activateDemoApiKey(newApiKey: string) {
+    window.sessionStorage.setItem(DEMO_API_KEY_STORAGE_KEY, newApiKey)
+    setActiveApiKey(newApiKey)
+    setApiKey(newApiKey)
+  }
+
   useEffect(() => {
     let active = true
 
     async function loadDemoSession() {
-      try {
-        const configResponse = await fetch('/__ledgerpay-demo-config', {
-          cache: 'no-store',
-        })
-        if (!configResponse.ok) throw new Error('Demo configuration is unavailable.')
-        const config = (await configResponse.json()) as DemoConfig
-        const configuredApiKey = typeof config.apiKey === 'string' ? config.apiKey : null
-        const configuredWebhookUrl = typeof config.webhookUrl === 'string'
-          ? config.webhookUrl
-          : null
-        setActiveApiKey(configuredApiKey)
-        if (!active) return
-        setApiKey(configuredApiKey)
-        setDemoWebhookUrl(configuredWebhookUrl)
-      } catch {
-        if (!active) return
-        setError('Could not load the local demo configuration.')
+      let sessionApiKey = window.sessionStorage.getItem(DEMO_API_KEY_STORAGE_KEY)
+      let webhookUrl = PRODUCTION_WEBHOOK_URL
+
+      if (import.meta.env.DEV) {
+        try {
+          const configResponse = await fetch('/__ledgerpay-demo-config', {
+            cache: 'no-store',
+          })
+          if (configResponse.ok) {
+            const config = (await configResponse.json()) as DemoConfig
+            if (!sessionApiKey && typeof config.apiKey === 'string' && config.apiKey) {
+              sessionApiKey = config.apiKey
+            }
+            if (typeof config.webhookUrl === 'string') {
+              webhookUrl = config.webhookUrl
+            }
+          }
+        } catch {
+          // Local development can fall back to creating a new Demo Merchant.
+        }
       }
 
       try {
+        if (!sessionApiKey) {
+          const result = await createInitialDemoMerchant(webhookUrl)
+          if (!active) return
+          activateDemoApiKey(result.data.apiKey)
+          setMerchant(merchantFromCreation(result.data))
+          setDemoWebhookUrl(result.data.webhookUrl ?? webhookUrl)
+          return
+        }
+
+        setActiveApiKey(sessionApiKey)
+        if (!active) return
+        window.sessionStorage.setItem(DEMO_API_KEY_STORAGE_KEY, sessionApiKey)
+        setApiKey(sessionApiKey)
+        setDemoWebhookUrl(webhookUrl)
+
         const result = await apiRequest<Merchant>('/api/v1/merchant')
         if (active) setMerchant(result.data)
       } catch (loadError) {
         if (!active) return
-        const setupHint = loadError instanceof ApiRequestError && loadError.status === 401
-          ? ' Configure LEDGERPAY_DEMO_API_KEY in frontend/.env.local and restart Vite.'
-          : ''
-        setError(`${errorMessage(loadError)}${setupHint}`)
+        setError(`${errorMessage(loadError)} Reset Demo to start a new session.`)
       }
     }
 
@@ -1242,8 +1289,7 @@ function App() {
     )
     if (!result) return
 
-    setActiveApiKey(result.data.apiKey)
-    setApiKey(result.data.apiKey)
+    activateDemoApiKey(result.data.apiKey)
   }
 
   async function handleDeactivateMerchant() {
@@ -1265,11 +1311,9 @@ function App() {
   }
 
   async function handleResetDemo() {
-    const body = {
-      name: 'LedgerPay Demo',
-      email: `ledgerpay-demo-${Date.now()}-${crypto.randomUUID()}@example.com`,
-      webhookUrl: demoWebhookUrl ?? merchant?.webhookUrl ?? null,
-    }
+    const body = createDemoMerchantBody(
+      demoWebhookUrl ?? merchant?.webhookUrl ?? PRODUCTION_WEBHOOK_URL,
+    )
     const result = await runRequest<CreateMerchantResponse>(
       'reset-demo',
       'POST',
@@ -1282,8 +1326,7 @@ function App() {
     )
     if (!result) return
 
-    setActiveApiKey(result.data.apiKey)
-    setApiKey(result.data.apiKey)
+    activateDemoApiKey(result.data.apiKey)
     setMerchant(merchantFromCreation(result.data))
     if (result.data.webhookUrl) setDemoWebhookUrl(result.data.webhookUrl)
     clearWorkflowState()

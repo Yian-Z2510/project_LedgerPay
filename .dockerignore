@@ -1,0 +1,14 @@
+.git
+.gitignore
+.env
+.env.*
+.idea
+.vscode
+target
+frontend
+ui-reference
+docs
+scripts
+*.log
+**/.DS_Store
+mvnw.cmd

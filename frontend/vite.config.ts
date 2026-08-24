@@ -28,7 +28,9 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const apiTarget = env.VITE_API_TARGET || 'http://localhost:8080'
   const apiKey = env.LEDGERPAY_DEMO_API_KEY
-  const webhookUrl = env.LEDGERPAY_WEBHOOK_URL || 'http://localhost:9000/webhook'
+  const webhookUrl = env.VITE_LEDGERPAY_WEBHOOK_URL
+    || env.LEDGERPAY_WEBHOOK_URL
+    || 'http://localhost:9000/webhook'
 
   const healthProxy: ProxyOptions = {
     target: apiTarget,
