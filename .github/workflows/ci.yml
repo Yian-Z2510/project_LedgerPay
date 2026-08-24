@@ -1,12 +1,19 @@
-name: CI
+name: CI/CD
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     services:
       postgres:
@@ -31,6 +38,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Java 21
         uses: actions/setup-java@v5
@@ -39,5 +48,174 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Run tests
+      - name: Run backend tests
         run: ./mvnw test
+
+  frontend-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Lint frontend
+        run: npm run lint
+
+  compose-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate production Compose
+        run: >-
+          docker compose
+          --env-file .env.production.example
+          --file compose.production.yaml
+          config --quiet
+
+      - name: Validate deployment script syntax
+        run: bash -n deploy/deploy-production.sh
+
+  publish-images:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - test
+      - frontend-validation
+      - compose-validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ledgerpay-backend
+            context: .
+            dockerfile: Dockerfile
+            build_args: ""
+          - image: ledgerpay-frontend
+            context: frontend
+            dockerfile: frontend/Dockerfile
+            build_args: VITE_LEDGERPAY_WEBHOOK_URL=http://webhook-receiver:9000/webhook
+          - image: ledgerpay-webhook-receiver
+            context: scripts
+            dockerfile: scripts/Dockerfile.webhook-receiver
+            build_args: ""
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/yian-z2510/${{ matrix.image }}:${{ github.sha }}
+          build-args: ${{ matrix.build_args }}
+
+  deploy-production:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - publish-images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://ledgerpay.yianz.me
+    concurrency:
+      group: ledgerpay-production-deployment
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure strict SSH verification
+        shell: bash
+        env:
+          EC2_SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          EC2_SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > "${RUNNER_TEMP}/ledgerpay-deploy-key"
+          printf '%s\n' "$EC2_SSH_KNOWN_HOSTS" > "${RUNNER_TEMP}/ledgerpay-known-hosts"
+
+      - name: Upload production Compose
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          set -euo pipefail
+          remote_compose="/opt/ledgerpay/compose.production.yaml.next-${GITHUB_SHA}"
+          scp \
+            -i "${RUNNER_TEMP}/ledgerpay-deploy-key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RUNNER_TEMP}/ledgerpay-known-hosts" \
+            compose.production.yaml \
+            "${EC2_USER}@${EC2_HOST}:${remote_compose}"
+
+      - name: Deploy and verify production
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          set -euo pipefail
+          ssh \
+            -i "${RUNNER_TEMP}/ledgerpay-deploy-key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="${RUNNER_TEMP}/ledgerpay-known-hosts" \
+            "${EC2_USER}@${EC2_HOST}" \
+            "NEW_IMAGE_TAG='${GITHUB_SHA}' bash -s" \
+            < deploy/deploy-production.sh
