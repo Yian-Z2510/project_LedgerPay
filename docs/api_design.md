@@ -552,7 +552,10 @@ The plaintext key is returned only in this response.
 
 ### Security note
 
-This endpoint is intentionally unauthenticated for v1 sandbox bootstrap. Production-grade rate limiting, CAPTCHA, email verification, invitation codes, and platform-admin approval are out of scope.
+This endpoint is intentionally unauthenticated for v1 sandbox bootstrap. The
+public deployment applies a lightweight host-Nginx IP rate limit to this exact
+POST route. Application-aware rate limiting, CAPTCHA, email verification,
+invitation codes, and platform-admin approval remain out of scope.
 
 ---
 
@@ -2377,8 +2380,10 @@ No new automatic retry cycle is started.
 - Merchant-level Payment, Refund, or WebhookEvent search;
 - concurrent simulation protection;
 - concurrent manual-retry protection;
-- production-grade rate limiting and registration-abuse prevention;
-- physical deletion of Merchant or financial history.
+- application-aware rate limiting and comprehensive registration-abuse prevention;
+- general or API-driven physical deletion of Merchant or financial history;
+  the deployment's guarded cleanup of identified old Demo Merchants is a narrow
+  operational retention exception.
 
 Future improvements are tracked separately in [`v2_backlog.md`](v2_backlog.md).
 

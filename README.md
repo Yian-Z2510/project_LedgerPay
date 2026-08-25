@@ -1,236 +1,148 @@
 # LedgerPay
 
-## Project Overview
+**LedgerPay is an end-to-end payment platform simulator built with Java and Spring Boot, modelling the Order → Payment → Refund → Webhook lifecycle from API request to persistence, asynchronous delivery, and production deployment.**
 
-LedgerPay is a feature-complete v1 backend payment gateway simulator built to practise REST API design, relational database design, transaction management, idempotency, concurrency control, webhook delivery, and testing.
+Payment systems need to remain correct even when clients retry requests, multiple operations arrive concurrently, or downstream delivery fails. LedgerPay addresses these failure scenarios through idempotent request handling, transactional state management, concurrency-safe refund accounting, database-enforced invariants, and persisted WebhookEvents with retryable delivery.
 
-## Current Status
+The complete system is deployed as a live HTTPS application on AWS, with a lightweight React console for exploring the payment lifecycle and engineering behaviour.
 
-The following functionality is currently implemented:
+**🌐 Live Demo — https://ledgerpay.yianz.me**
 
-- Spring Boot application scaffold
-- Java 21 and Maven configuration
-- PostgreSQL datasource configuration through environment variables
-- `GET /health` application-level liveness endpoint
-- Merchant registration, retrieval, webhook URL update, and API-key rotation endpoints
-- Merchant API-key authentication, with only API-key hashes stored in PostgreSQL
-- Merchant-scoped Order creation, retrieval, listing, amount update, and cancellation
-- Merchant-scoped Payment creation, retrieval, Order history, and manual simulation
-- Payment idempotency with current-representation replay and PostgreSQL race protection
-- Order-row pessimistic locking across Payment creation and Order mutations
-- Refund persistence, merchant-scoped create/query/history APIs, and historical idempotency replay
-- Refund `PENDING` capacity reservation and Payment-row concurrency protection during creation
-- Manual Refund simulation to `SUCCEEDED` or `FAILED`, with Payment refund accounting and Order `PARTIALLY_REFUNDED` / `REFUNDED` transitions
-- Transactional Payment and Refund terminal transitions with durable immutable `WebhookEvent` snapshots
-- Merchant-scoped WebhookEvent query and Payment history APIs
-- Real HTTP webhook delivery with stable event envelopes, automatic retry, and synchronous manual retry
-- PostgreSQL ownership, lifecycle, idempotency, and partial-uniqueness constraints
-- Merchant soft-deactivation with unfinished Payment, Refund, and WebhookEvent checks
-- Validation and consistent API error responses across the implemented modules
-- Focused unit, MVC, persistence, security, PostgreSQL integration, concurrency, rollback, and full-lifecycle acceptance tests
+`Java 21` · `Spring Boot` · `PostgreSQL` · `React` · `Docker` · `AWS` · `GitHub Actions`
 
-## V1 Limitations
+---
 
-The v1 backend intentionally uses one polling Webhook worker and at-least-once
-delivery. It does not add multi-worker claiming or fully serialize concurrent
-simulation, manual retry, and already-in-flight Merchant deactivation races.
-See the [API Design](docs/api_design.md) and [V2 Backlog](docs/v2_backlog.md) for
-the detailed boundaries and deferred hardening work.
+## Engineering Highlights
+
+### Payment Correctness Under Retries
+
+Merchant-scoped idempotency, transactional state transitions, and PostgreSQL uniqueness constraints work together to prevent duplicate Payments and inconsistent state when requests are retried or race concurrently.
+
+### Concurrency-Safe Refund Accounting
+
+Refund capacity is reserved transactionally while holding a pessimistic lock on the Payment, preventing concurrent partial refunds from collectively exceeding the original payment amount.
+
+### Durable Webhook Delivery
+
+Payment and Refund outcomes are persisted as immutable WebhookEvents with retry state, attempt tracking, failure handling, and at-least-once delivery semantics.
+
+### Production Delivery & Recovery
+
+LedgerPay runs as a Dockerized HTTPS service on AWS EC2, with SHA-tagged images, automated GitHub Actions deployment through OIDC and AWS Systems Manager, production health verification, and application image rollback.
+
+---
+
+## Architecture
+
+LedgerPay keeps business rules in the backend and uses PostgreSQL as the durable source of payment state.
+
+**Application flow**
+
+**React Demo Console → REST API & API-key Authentication → Spring Boot Domain Services → JPA / Repositories → PostgreSQL**
+
+The Spring Boot service layer owns lifecycle rules, merchant ownership, transaction boundaries, idempotency, and concurrency control across Merchant, Order, Payment, Refund, and WebhookEvent resources.
+
+PostgreSQL provides a second integrity layer through foreign keys, unique constraints, lifecycle constraints, and transactional persistence. WebhookEvents are stored durably before delivery and processed independently by the webhook delivery worker.
+
+The React application is a thin interaction layer over the backend rather than the owner of business state.
+
+For the full application, deployment, and CI/CD architecture, see [Architecture](docs/architecture.md).
+
+---
 
 ## Tech Stack
 
-- Java 21
-- Spring Boot 4.1.0
-- Maven with Maven Wrapper
-- Spring Web MVC
-- Spring Data JPA
-- PostgreSQL
-- JUnit 5
-- MockMvc
-- direnv as an optional, recommended local-environment tool
+| Area | Technologies |
+| --- | --- |
+| **Backend** | Java 21, Spring Boot 4.1, Spring Web MVC, Spring Data JPA |
+| **Database** | PostgreSQL 17, Flyway |
+| **Frontend** | React, TypeScript, Vite, Nginx |
+| **Testing** | JUnit 5, MockMvc, PostgreSQL integration and concurrency tests |
+| **Infrastructure** | Docker, Docker Compose, Nginx, Let's Encrypt / Certbot |
+| **Cloud & CD** | AWS EC2, AWS Systems Manager, GHCR, GitHub Actions, GitHub OIDC |
+| **Security** | API-key authentication, hashed credentials, merchant-scoped ownership |
 
-## Prerequisites
+---
 
-- Java 21
-- PostgreSQL
-- A local PostgreSQL database and user
-- Git
-- direnv (optional but recommended)
+## Production & CI/CD
 
-Installing Maven globally is not required because the repository includes Maven Wrapper. The setup is portable and does not require macOS or Homebrew.
+LedgerPay is deployed as a containerized application on a single AWS EC2 instance.
 
-## Local Setup
+**Internet → HTTPS / Host Nginx → Docker Frontend → Spring Boot → PostgreSQL**
 
-### 1. Clone and enter the repository
+Only HTTP/HTTPS are publicly exposed for application traffic. The backend, PostgreSQL, and demo webhook receiver remain on an internal Docker network, while PostgreSQL data persists through a named Docker volume.
+
+Production deployment follows:
+
+**Merge to `main` → CI validation → SHA-tagged Docker images → GHCR → GitHub OIDC → AWS SSM → EC2 deployment → HTTPS health verification**
+
+GitHub Actions uses short-lived AWS credentials through OIDC instead of stored AWS access keys, and AWS Systems Manager allows automated deployment without exposing SSH to GitHub-hosted runners.
+
+If deployment health verification fails, the application returns to the previous image version. Database migrations are treated separately because rolling back an application image does not automatically reverse a Flyway migration.
+
+---
+
+## Run Locally
+
+The complete stack can be started with Docker Compose:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Yian-Z2510/project_LedgerPay.git
 cd project_LedgerPay
+
+cp .env.example .env
+docker compose up --build
 ```
 
-### 2. Create the local PostgreSQL database and user
-
-Run the following SQL using a PostgreSQL administrator account:
-
-```sql
-CREATE USER ledgerpay WITH PASSWORD 'replace_with_a_local_password';
-CREATE DATABASE ledgerpay OWNER ledgerpay;
-```
-
-You may use different database names, usernames, and passwords if you update the environment configuration accordingly.
-
-### 3. Create the local environment file
-
-```bash
-cp .env.local.example .env.local
-```
-
-Update `.env.local` with your local database settings:
-
-```properties
-DB_URL=jdbc:postgresql://localhost:5432/ledgerpay
-DB_USERNAME=ledgerpay
-DB_PASSWORD=replace_with_your_local_database_password
-```
-
-`.env.local` contains local credentials, is ignored by Git, and must never be committed.
-
-### 4. Recommended direnv workflow
-
-direnv is optional but recommended. After installing direnv and connecting it to your shell, allow the repository configuration once:
-
-```bash
-direnv allow
-```
-
-Entering the repository will then load values from `.env.local` through `.envrc` automatically.
-
-### 5. Manual environment-variable alternative
-
-If you do not use direnv, export the variables manually:
-
-```bash
-export DB_URL='jdbc:postgresql://localhost:5432/ledgerpay'
-export DB_USERNAME='ledgerpay'
-export DB_PASSWORD='replace_with_your_local_database_password'
-```
-
-These variables must be available to the Maven process that starts or tests the application.
-
-## Run the Application
+For backend-only development with PostgreSQL configured:
 
 ```bash
 ./mvnw spring-boot:run
 ```
 
-The application runs on port `8080` by default. Verify it with:
+Health check:
 
 ```bash
 curl http://localhost:8080/health
 ```
 
-Expected response:
+---
 
-```json
-{
-  "status": "UP"
-}
-```
+## Testing
 
-The current `/health` endpoint is an application-level liveness-style check. It confirms that the application can respond to HTTP requests but does not actively query PostgreSQL. No readiness endpoint is currently implemented.
+LedgerPay combines **415 automated tests** with manual end-to-end validation of the deployed application.
 
-## Run Tests
+Automated coverage includes API behaviour, authentication and ownership, business rules, PostgreSQL constraints, transaction rollback, idempotency races, refund concurrency, webhook behaviour, and full Payment/Refund lifecycle scenarios.
 
-Run the focused Web MVC test:
+PostgreSQL-backed integration and concurrency tests are used for behaviours such as locking, uniqueness races, and transaction rollback that cannot be meaningfully proven with mocks alone.
 
-```bash
-./mvnw -Dtest=HealthControllerTest test
-```
-
-`HealthControllerTest` tests the Web MVC endpoint without requiring PostgreSQL.
-
-Run the complete test suite when the datasource environment variables are already loaded:
+The live application is also manually validated through the complete **Merchant → Order → Payment → Refund → Webhook** flow, including browser-based interaction, frontend-backend integration, persistence, webhook delivery, HTTPS deployment, and production health checks.
 
 ```bash
 ./mvnw test
 ```
 
-To load the local environment explicitly with direnv:
+---
 
-```bash
-direnv exec . ./mvnw test
-```
+## Further Reading
 
-`LedgerPayApplicationTests` loads the complete Spring application context. The complete application-context test therefore requires valid datasource environment variables and an accessible PostgreSQL instance.
+For deeper technical details:
 
-## Available Endpoints
+- **[Architecture](docs/architecture.md)** — application, production, and CI/CD design
+- **[Engineering Decisions](docs/engineering_decisions.md)** — idempotency, transactions, refund concurrency, webhook delivery, and deployment trade-offs
+- **[API Design](docs/api_design.md)** — REST contracts, authentication, lifecycle rules, ownership, and error semantics
+- **[Database Design](docs/database_design.md)** — schema relationships and database-level integrity guarantees
+- **[Product Requirements](docs/PRD.md)** — LedgerPay v1 scope and business rules
+- **[V2 Backlog](docs/v2_backlog.md)** — deferred features and engineering hardening opportunities
 
-| Method | Path | Description | Response |
-| --- | --- | --- | --- |
-| GET | `/health` | Application liveness-style check | `{"status":"UP"}` |
-| POST | `/api/v1/merchants` | Register a Merchant and issue its first API key | `CreateMerchantResponse` |
-| GET | `/api/v1/merchant` | Get the authenticated Merchant | `MerchantResponse` |
-| PATCH | `/api/v1/merchant` | Update the authenticated Merchant webhook URL | `MerchantResponse` |
-| POST | `/api/v1/merchant/api-key/rotate` | Rotate the authenticated Merchant API key | `RotateApiKeyResponse` |
-| POST | `/api/v1/merchant/deactivate` | Soft-deactivate an eligible Merchant | `MerchantResponse` |
-| POST | `/api/v1/orders` | Create an Order | `OrderResponse` |
-| GET | `/api/v1/orders` | List the authenticated Merchant's Orders | `OrderResponse[]` |
-| GET | `/api/v1/orders/{orderId}` | Get an owned Order | `OrderResponse` |
-| PATCH | `/api/v1/orders/{orderId}` | Update an eligible Order amount | `OrderResponse` |
-| POST | `/api/v1/orders/{orderId}/cancel` | Cancel an eligible Order | `OrderResponse` |
-| POST | `/api/v1/payments` | Create or replay a Payment | `PaymentResponse` |
-| GET | `/api/v1/payments/{paymentId}` | Get an owned Payment | `PaymentResponse` |
-| GET | `/api/v1/orders/{orderId}/payments` | List Payment attempts newest first | `PaymentResponse[]` |
-| POST | `/api/v1/payments/{paymentId}/simulate` | Simulate a terminal Payment outcome | `PaymentResponse` |
-| POST | `/api/v1/payments/{paymentId}/refunds` | Create or replay a Refund | `RefundResponse` |
-| GET | `/api/v1/refunds/{refundId}` | Get an owned Refund | `RefundResponse` |
-| GET | `/api/v1/payments/{paymentId}/refunds` | List Refund history newest first | `RefundResponse[]` |
-| POST | `/api/v1/refunds/{refundId}/simulate` | Simulate a terminal Refund outcome | `RefundResponse` |
-| GET | `/api/v1/webhook-events/{eventId}` | Get an owned WebhookEvent | `WebhookEventResponse` |
-| GET | `/api/v1/payments/{paymentId}/webhook-events` | List Payment and Refund WebhookEvents | `WebhookEventResponse[]` |
-| POST | `/api/v1/webhook-events/{eventId}/retry` | Manually retry a failed WebhookEvent | `WebhookEventResponse` |
+---
 
-## Project Structure
+## Limitations & Future Evolution
 
-```text
-src/
-├── main/
-│   ├── java/com/ledgerpay/
-│   │   ├── controller/
-│   │   ├── dto/
-│   │   ├── entity/
-│   │   ├── exception/
-│   │   ├── repository/
-│   │   ├── security/
-│   │   ├── service/
-│   │   └── validation/
-│   └── resources/
-│       ├── application.properties
-│       └── db/migration/
-└── test/
-    └── java/com/ledgerpay/
-        ├── controller/
-        ├── dto/
-        ├── exception/
-        ├── repository/
-        ├── security/
-        └── service/
-```
+LedgerPay v1 focuses on the core **Order → Payment → Refund → Webhook** lifecycle rather than the full scope of a commercial payment platform. Payments are simulated rather than connected to a real PSP, and capabilities such as settlement, reconciliation, disputes, fraud controls, and production merchant onboarding remain outside the current scope. The system also runs on a single application instance with PostgreSQL and a polling-based webhook worker, with lightweight infrastructure appropriate for a portfolio-scale deployment.
 
-Other repository entries include:
+If LedgerPay continued into a second engineering phase, I would prioritize three areas:
 
-```text
-docs/
-.envrc
-.env.local.example
-pom.xml
-mvnw
-mvnw.cmd
-```
-
-## Design Documentation
-
-- [Product Requirements](docs/PRD.md)
-- [API Design](docs/api_design.md)
-- [Database Design](docs/database_design.md)
-- [V2 Backlog](docs/v2_backlog.md)
+1. **Event-driven architecture** — evolve webhook processing toward a transactional outbox, message queue, and independently scalable workers.
+2. **Richer payment lifecycle** — integrate an external payment provider and model more realistic asynchronous flows such as authorization and capture.
+3. **Distributed scaling** — support multiple stateless application instances, managed PostgreSQL, stronger observability, and higher availability.
