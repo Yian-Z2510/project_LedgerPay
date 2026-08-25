@@ -411,7 +411,12 @@ Introduce an administrative recovery workflow with:
 
 ### Current v1 limitation
 
-`POST /api/v1/merchants` is unauthenticated and has no production-grade abuse controls.
+`POST /api/v1/merchants` is unauthenticated and has only lightweight host-level
+abuse protection.
+
+The portfolio deployment adds a lightweight host-Nginx limit of approximately
+five Merchant-creation requests per minute per source IP. It is intentionally
+not treated as account-aware or production-grade abuse prevention.
 
 ### V2 direction
 
@@ -434,6 +439,9 @@ Consider:
 ---
 
 ## 3.7 Production Rate Limiting
+
+v1 limits only the unauthenticated Merchant-creation route by source IP at the
+host Nginx layer. Broader application-aware limiting remains future work.
 
 ### V2 direction
 
@@ -738,7 +746,10 @@ Merchant API-key authentication remains separate from dashboard-user authenticat
 
 ## 4.12 Production-Grade Deletion and Retention Policies
 
-LedgerPay v1 never physically deletes financial lifecycle records.
+The LedgerPay v1 business API never physically deletes lifecycle records. The
+portfolio deployment includes a narrow operational job for identified browser
+Demo Merchant graphs older than seven days. It is not a general retention,
+account-closure, or compliance deletion system.
 
 Future work may define:
 

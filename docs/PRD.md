@@ -202,6 +202,15 @@ When a payment or refund reaches a meaningful end state, the system emits a webh
 - Basic API documentation
 - Unit, MVC, PostgreSQL integration, concurrency, rollback, and lifecycle acceptance tests
 
+### Demo and deployment
+
+- Thin React Demo Console that creates a session-specific Demo Merchant and
+  calls the backend API
+- Docker Compose runtime for frontend/Nginx, Spring Boot, PostgreSQL, and the
+  demo webhook receiver
+- Public HTTPS deployment on a single EC2 instance with GitHub Actions delivery
+  through GHCR, OIDC, and SSM
+
 ## Out of Scope
 
 This MVP does not include:
@@ -209,8 +218,11 @@ This MVP does not include:
 - Real bank or card network integration
 - Real money movement
 - User authentication
-- Frontend UI
-- Production-level security (signed webhooks, rate limits, etc.)
+- End-user checkout or Merchant-dashboard product UI; the included React UI is
+  an engineering demo console
+- Comprehensive production security controls such as signed webhooks, WAF
+  protection, and Merchant/API-key-wide rate limiting; the deployment includes
+  only a lightweight host-Nginx IP limit for Merchant registration
 - Multiple currencies, currency exchange, or conversion
 - Complex risk or fraud engine
 - Chargebacks or Merchant-level payment search/list APIs

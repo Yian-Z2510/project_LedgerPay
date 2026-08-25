@@ -202,7 +202,11 @@ Merchant records use soft deletion:
 ACTIVE -> INACTIVE
 ```
 
-LedgerPay does not physically delete merchants or cascade-delete transaction history.
+The LedgerPay business API does not physically delete Merchants or
+cascade-delete transaction history. The portfolio deployment has one narrow
+operational exception: a guarded retention job deletes only browser-generated
+Demo Merchant graphs older than seven days, in explicit foreign-key dependency
+order. This is not a general Merchant deletion API or cascade policy.
 
 Before deactivation, the Service layer checks for a `PENDING` Payment, `PENDING`
 Refund, or `PENDING` WebhookEvent. Any one of these blocks deactivation. Terminal
@@ -1189,7 +1193,8 @@ The following are intentionally excluded:
 - split payments, instalments, and multi-tender payments;
 - a separate WebhookDeliveryAttempt table;
 - storing a merchant's external order reference;
-- physical deletion of financial records;
+- general or API-driven physical deletion of financial records; the
+  deployment's narrow Demo-data retention job is an operational exception;
 - optimistic-lock version fields;
 - per-event maximum webhook retry settings.
 
