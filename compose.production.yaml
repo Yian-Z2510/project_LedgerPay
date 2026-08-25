@@ -16,12 +16,22 @@ services:
       start_period: 5s
     networks:
       - app-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   webhook-receiver:
     image: ghcr.io/yian-z2510/ledgerpay-webhook-receiver:${IMAGE_TAG:?Set IMAGE_TAG to the full Git commit SHA}
     restart: unless-stopped
     networks:
       - app-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   backend:
     image: ghcr.io/yian-z2510/ledgerpay-backend:${IMAGE_TAG:?Set IMAGE_TAG to the full Git commit SHA}
@@ -45,6 +55,11 @@ services:
       start_period: 20s
     networks:
       - app-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   frontend:
     image: ghcr.io/yian-z2510/ledgerpay-frontend:${IMAGE_TAG:?Set IMAGE_TAG to the full Git commit SHA}
@@ -63,6 +78,11 @@ services:
     networks:
       - edge
       - app-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   edge:

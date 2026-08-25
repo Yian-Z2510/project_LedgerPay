@@ -99,7 +99,7 @@ jobs:
           config --quiet
 
       - name: Validate deployment script syntax
-        run: bash -n deploy/deploy-production.sh
+        run: bash -n deploy/deploy-production.sh deploy/cleanup-demo-data.sh
 
   publish-images:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

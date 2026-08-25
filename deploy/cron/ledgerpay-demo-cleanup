@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Daily at 03:17 UTC. Output goes to the system journal/syslog without secrets.
+17 3 * * * ubuntu /bin/bash -o pipefail -c '/opt/ledgerpay/cleanup-demo-data.sh --execute --retention-days 7 2>&1 | /usr/bin/logger -t ledgerpay-demo-cleanup'
